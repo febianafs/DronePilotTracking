@@ -119,7 +119,6 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun acceptLocation(candidate: LocationData) {
-        if (candidate.accuracyMeters > 30f) return
         val previous = lastAccepted
         if (previous == null) {
             lastAccepted = candidate
@@ -127,28 +126,12 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        val elapsedSeconds = ((candidate.timestamp - previous.timestamp) / 1_000f).coerceAtLeast(0.5f)
         val distanceMeters = distanceMeters(previous, candidate)
+        val elapsedSeconds = ((candidate.timestamp - previous.timestamp) / 1_000f)
+            .coerceAtLeast(0.5f)
         val moving = distanceMeters / elapsedSeconds > 1.5f || distanceMeters > 8f
-        val maxJump = 50f + 5f * elapsedSeconds
-        if (distanceMeters > maxJump) return
-
-        val alpha: Double = if (moving) {
-            when {
-                candidate.accuracyMeters < 5f -> 0.7
-                candidate.accuracyMeters < 10f -> 0.5
-                else -> 0.3
-            }
-        } else {
-            elapsedSeconds.toDouble() / (5.0 + elapsedSeconds.toDouble())
-        }
-
-        val filtered = candidate.copy(
-            latitude = previous.latitude + alpha * (candidate.latitude - previous.latitude),
-            longitude = previous.longitude + alpha * (candidate.longitude - previous.longitude)
-        )
-        lastAccepted = filtered
-        publish(filtered, moving)
+        lastAccepted = candidate
+        publish(candidate, moving)
     }
 
     private fun publish(location: LocationData, moving: Boolean) {

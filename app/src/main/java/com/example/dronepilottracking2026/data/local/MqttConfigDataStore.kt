@@ -20,6 +20,8 @@ class MqttConfigDataStore(private val context: Context) {
         val wsPort = intPreferencesKey("ws_port")
         val username = stringPreferencesKey("username")
         val password = stringPreferencesKey("password")
+        val serialNumber = stringPreferencesKey("serial_number")
+        val id = stringPreferencesKey("id")
         val useWebSocket = booleanPreferencesKey("use_websocket")
         val personelDataTopic = stringPreferencesKey("personel_data_topic")
         val personelSosTopic = stringPreferencesKey("personel_sos_topic")
@@ -33,6 +35,8 @@ class MqttConfigDataStore(private val context: Context) {
             wsPort = preferences[Keys.wsPort],
             username = preferences[Keys.username].orEmpty(),
             password = preferences[Keys.password].orEmpty(),
+            serialNumber = preferences[Keys.serialNumber].orEmpty(),
+            id = preferences[Keys.id].orEmpty(),
             useWebSocket = preferences[Keys.useWebSocket] ?: false,
             personelDataTopic = preferences[Keys.personelDataTopic].orEmpty(),
             personelSosTopic = preferences[Keys.personelSosTopic].orEmpty(),
@@ -47,6 +51,8 @@ class MqttConfigDataStore(private val context: Context) {
             config.wsPort?.let { preferences[Keys.wsPort] = it }
             preferences[Keys.username] = config.username
             preferences[Keys.password] = config.password
+            preferences[Keys.serialNumber] = config.serialNumber
+            preferences[Keys.id] = config.id
             preferences[Keys.useWebSocket] = config.useWebSocket
             preferences[Keys.personelDataTopic] = config.personelDataTopic
             preferences[Keys.personelSosTopic] = config.personelSosTopic

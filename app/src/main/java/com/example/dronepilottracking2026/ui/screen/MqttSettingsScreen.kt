@@ -62,14 +62,16 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
     var wsPort by remember(savedConfig.wsPort) { mutableStateOf(savedConfig.wsPort?.toString().orEmpty()) }
     var username by remember(savedConfig.username) { mutableStateOf(savedConfig.username) }
     var password by remember(savedConfig.password) { mutableStateOf(savedConfig.password) }
+    var serialNumber by remember(savedConfig.serialNumber) { mutableStateOf(savedConfig.serialNumber) }
+    var id by remember(savedConfig.id) { mutableStateOf(savedConfig.id) }
     var useWebSocket by remember(savedConfig.useWebSocket) { mutableStateOf(savedConfig.useWebSocket) }
     var personelDataTopic by remember(savedConfig.personelDataTopic) { mutableStateOf(savedConfig.personelDataTopic) }
     var personelSosTopic by remember(savedConfig.personelSosTopic) { mutableStateOf(savedConfig.personelSosTopic) }
     var interval by remember(savedConfig.intervalMs) { mutableStateOf(savedConfig.intervalMs?.toIntervalLabel().orEmpty()) }
 
+    val selectedPort = (if (useWebSocket) wsPort else tcpPort).toIntOrNull()
     val connectionReady = server.isNotBlank() &&
-        tcpPort.toIntOrNull() != null &&
-        wsPort.toIntOrNull() != null &&
+        selectedPort?.let { it in 1..65535 } == true &&
         username.isNotBlank() &&
         password.isNotBlank()
     val topicsReady = personelDataTopic.isNotBlank() && personelSosTopic.isNotBlank()
@@ -81,6 +83,8 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
             wsPort = wsPort.toIntOrNull(),
             username = username.trim(),
             password = password,
+            serialNumber = serialNumber.trim(),
+            id = id.trim(),
             useWebSocket = useWebSocket,
             personelDataTopic = personelDataTopic.trim(),
             personelSosTopic = personelSosTopic.trim(),
@@ -162,6 +166,7 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
                 placeholder = "MQTT password",
                 isPassword = true
             )
+
         }
 
         SettingsSection(title = "MQTT TOPICS") {
@@ -182,7 +187,45 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
 
             IntervalSelector(
                 value = interval,
-                onValueChange = { interval = it }
+                onValueChange = {
+                    interval = it
+                    it.toIntervalMs()?.let { intervalMs -> viewModel?.saveInterval(intervalMs) }
+                }
+            )
+        }
+
+        SettingsSection(title = "DEVICE IDENTITY") {
+            TacticalField(
+                value = serialNumber,
+                onValueChange = { serialNumber = it },
+                label = "SERIAL NUMBER",
+                placeholder = "Device serial number"
+            )
+            TacticalField(
+                value = id,
+                onValueChange = { id = it },
+                label = "ID",
+                placeholder = "Device ID"
+            )
+        }
+
+        Button(
+            onClick = { viewModel?.saveSerialNumberAndId(serialNumber.trim(), id.trim()) },
+            enabled = serialNumber.isNotBlank(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = TacticalCardElevated,
+                contentColor = TacticalCyan
+            )
+        ) {
+            Text(
+                text = "SAVE SERIAL NUMBER & ID",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.7.sp
             )
         }
 
@@ -223,6 +266,19 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.7.sp
+            )
+        }
+
+        mqttState.testResult?.let { result ->
+            Text(
+                text = result,
+                modifier = Modifier.fillMaxWidth(),
+                color = if (result == "Connection test succeeded") {
+                    com.example.dronepilottracking2026.ui.theme.TacticalGreen
+                } else {
+                    TacticalMuted
+                },
+                fontSize = 10.sp
             )
         }
 
@@ -302,6 +358,14 @@ private fun IntervalSelector(
                 readOnly = true,
                 singleLine = true,
                 placeholder = { Text("Select interval", color = TacticalMuted.copy(alpha = 0.7f)) },
+                trailingIcon = {
+                    Text(
+                        text = if (expanded) "▲" else "▼",
+                        color = TacticalAmber,
+                        fontSize = 14.sp,
+                        modifier = Modifier.clickable { expanded = !expanded }
+                    )
+                },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = TacticalCardElevated,
                     unfocusedContainerColor = TacticalCardElevated,
@@ -422,11 +486,10 @@ private fun TacticalField(
                 {
                     IconButton(onClick = { passwordVisible = !passwordVisible }) {
                         Text(
-                            text = if (passwordVisible) "HIDE" else "SHOW",
+                            text = if (passwordVisible) "◉" else "◌",
                             color = TacticalCyan,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }

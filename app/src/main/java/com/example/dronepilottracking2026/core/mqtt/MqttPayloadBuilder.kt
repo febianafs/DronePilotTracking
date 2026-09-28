@@ -1,6 +1,8 @@
 package com.example.dronepilottracking2026.core.mqtt
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.provider.Settings
 import com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService
 import com.example.dronepilottracking2026.data.model.BatteryPayload
@@ -11,77 +13,47 @@ import com.example.dronepilottracking2026.data.model.TrackingPayload
 import com.example.dronepilottracking2026.data.model.PersonnelProfile
 import com.example.dronepilottracking2026.data.model.LocationData
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import android.util.Base64
 
 class MqttPayloadBuilder(private val context: Context) {
+    private var cachedAvatarUri: String? = null
+    private var cachedAvatarBase64: String? = null
+
     fun buildTrackingPayload(
         profile: PersonnelProfile,
         location: LocationData,
         batteryLevel: Int,
-        charging: Boolean
+        charging: Boolean,
+        serialNumber: String,
+        id: String
     ): String {
         val now = System.currentTimeMillis()
-        val heartRateConnected = BluetoothLeService.connectionState.value ==
-            com.example.dronepilottracking2026.ui.bluetooth.BleConnectionState.CONNECTED
-
-        val payload = TrackingPayload(
-            timestamp = now,
-            serialNumber = "",
-            androidId = androidId(),
-            appVersion = appVersion(),
-            identity = IdentityPayload(
-                id = profile.nrp,
-                nrp = profile.nrp,
-                name = profile.name,
-                avatarUri = profile.avatarUri.orEmpty()
-            ),
-            gps = GpsPayload(
-                gpsTimestamp = location.timestamp,
-                latitude = location.latitude,
-                longitude = location.longitude,
-                accuracy = location.accuracyMeters,
-                source = location.source.label,
-                satellites = location.satelliteCount
-            ),
-            radioHealth = RadioHealthPayload(
-                heartrateTimestamp = now,
-                heartrate = BluetoothLeService.bpm.value,
-                connected = heartRateConnected
-            ),
-            battery = BatteryPayload(
-                batteryTimestamp = now,
-                level = batteryLevel,
-                charging = charging
-            )
-        )
 
         return JSONObject().apply {
-            put("timestamp", payload.timestamp)
-            put("serial_number", payload.serialNumber)
-            put("android_id", payload.androidId)
-            put("app_version", payload.appVersion)
+            put("source", "INTERNET")
+            put("timestamp", now)
+            put("serial_number", serialNumber)
+            put("android_id", androidId())
             put("identity", JSONObject().apply {
-                put("id", payload.identity.id)
-                put("nrp", payload.identity.nrp)
-                put("name", payload.identity.name)
-                put("avatar_url", payload.identity.avatarUri)
+                put("id", id)
+                put("avatar", avatarBase64Cached(profile.avatarUri) ?: JSONObject.NULL)
+                put("nrp", profile.nrp)
+                put("name", profile.name)
             })
             put("gps", JSONObject().apply {
-                put("gps_timestamp", payload.gps.gpsTimestamp)
-                put("latitude", payload.gps.latitude)
-                put("longitude", payload.gps.longitude)
-                put("accuracy", payload.gps.accuracy)
-                put("source", payload.gps.source)
-                put("satellites", payload.gps.satellites)
+                put("gps_timestamp", location.timestamp)
+                put("latitude", location.latitude)
+                put("longitude", location.longitude)
+                put("accuracy", location.accuracyMeters)
             })
             put("radio_health", JSONObject().apply {
-                put("heartrate_timestamp", payload.radioHealth.heartrateTimestamp)
-                put("heartrate", payload.radioHealth.heartrate)
-                put("connected", payload.radioHealth.connected)
+                put("heartrate_timestamp", now)
+                put("heartrate", BluetoothLeService.bpm.value)
             })
             put("battery", JSONObject().apply {
-                put("battery_timestamp", payload.battery.batteryTimestamp)
-                put("level", payload.battery.level)
-                put("charging", payload.battery.charging)
+                put("battery_timestamp", now)
+                put("level", batteryLevel)
             })
         }.toString()
     }
@@ -89,15 +61,18 @@ class MqttPayloadBuilder(private val context: Context) {
     fun buildSosPayload(
         profile: PersonnelProfile,
         location: LocationData,
-        sos: Int = 1
+        sos: Int = 1,
+        serialNumber: String,
+        id: String
     ): String {
         return JSONObject().apply {
+            put("source", "INTERNET")
             put("timestamp", System.currentTimeMillis())
-            put("serial_number", "")
+            put("serial_number", serialNumber)
             put("android_id", androidId())
-            put("id", profile.nrp)
+            put("id", id)
+            put("nrp", profile.nrp)
             put("name", profile.name)
-            put("avatar_url", profile.avatarUri.orEmpty())
             put("sos", sos)
             put("latitude", location.latitude)
             put("longitude", location.longitude)
@@ -110,9 +85,57 @@ class MqttPayloadBuilder(private val context: Context) {
         Settings.Secure.ANDROID_ID
     ).orEmpty()
 
-    private fun appVersion(): String = runCatching {
-        context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
-    }.getOrDefault("")
+    private fun avatarBase64Cached(uri: String?): String? {
+        if (uri == cachedAvatarUri) return cachedAvatarBase64
+        val encoded = avatarBase64(uri)
+        cachedAvatarUri = uri
+        cachedAvatarBase64 = encoded
+        return encoded
+    }
+
+    private fun avatarBase64(uri: String?): String? {
+        if (uri.isNullOrBlank()) return null
+        return runCatching {
+            val resolver = context.contentResolver
+            val parsedUri = android.net.Uri.parse(uri)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            resolver.openInputStream(parsedUri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+            }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+            val targetSize = 384
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= targetSize) {
+                sample *= 2
+            }
+
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val bitmap = resolver.openInputStream(parsedUri)?.use {
+                BitmapFactory.decodeStream(it, null, options)
+            } ?: return null
+
+            try {
+                var quality = 60
+                var compressed: ByteArray
+                do {
+                    compressed = ByteArrayOutputStream().use { output ->
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
+                        output.toByteArray()
+                    }
+                    if (compressed.size <= 60 * 1024 || quality <= 35) break
+                    quality -= 5
+                } while (quality >= 35)
+
+                Base64.encodeToString(compressed, Base64.NO_WRAP)
+            } finally {
+                bitmap.recycle()
+            }
+        }.getOrNull()
+    }
 }
 
 fun batterySnapshot(context: Context): Pair<Int, Boolean> {

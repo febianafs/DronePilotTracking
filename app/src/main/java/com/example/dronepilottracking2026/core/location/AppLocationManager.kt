@@ -91,6 +91,7 @@ class AppLocationManager(private val context: Context) {
                 close()
             }
         } else {
+            var bestLocation: Location? = null
             val listener = object : LocationListener {
                 override fun onLocationChanged(location: Location) {
                     val source = if (location.provider == LocationManager.GPS_PROVIDER) {
@@ -98,7 +99,10 @@ class AppLocationManager(private val context: Context) {
                     } else {
                         LocationSource.NETWORK
                     }
-                    emit(location, source)
+                    if (isBetterLocation(location, bestLocation)) {
+                        bestLocation = location
+                        emit(location, source)
+                    }
                 }
                 override fun onProviderEnabled(provider: String) = Unit
                 override fun onProviderDisabled(provider: String) = Unit
@@ -125,6 +129,30 @@ class AppLocationManager(private val context: Context) {
                 trySend(Result.failure(IllegalStateException("Location permission denied")))
                 close()
             }
+        }
+    }
+
+    private fun isBetterLocation(location: Location, currentBest: Location?): Boolean {
+        if (currentBest == null) return true
+
+        val timeDelta = location.time - currentBest.time
+        val significantlyNewer = timeDelta > 2 * 60 * 1000
+        val significantlyOlder = timeDelta < -(2 * 60 * 1000)
+        val newer = timeDelta > 0
+
+        if (significantlyNewer) return true
+        if (significantlyOlder) return false
+
+        val accuracyDelta = (location.accuracy - currentBest.accuracy).toInt()
+        val moreAccurate = accuracyDelta < 0
+        val significantlyLessAccurate = accuracyDelta > 200
+        val sameProvider = location.provider == currentBest.provider
+
+        return when {
+            moreAccurate -> true
+            newer && !significantlyLessAccurate -> true
+            newer && !significantlyLessAccurate && sameProvider -> true
+            else -> false
         }
     }
 

@@ -57,6 +57,8 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.play.services.location)
     implementation(libs.hivemq.mqtt)
+    implementation(libs.netty.common)
+    implementation(libs.netty.codec.http)
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

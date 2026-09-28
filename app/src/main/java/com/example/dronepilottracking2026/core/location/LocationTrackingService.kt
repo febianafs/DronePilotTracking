@@ -155,7 +155,9 @@ class LocationTrackingService : Service() {
                     profile = currentProfile,
                     location = currentLocation,
                     batteryLevel = batteryLevel,
-                    charging = charging
+                    charging = charging,
+                    serialNumber = config.serialNumber,
+                    id = config.id
                 )
                 mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
             }
@@ -187,10 +189,12 @@ class LocationTrackingService : Service() {
             if (!config.isComplete) return@launch
             val (batteryLevel, charging) = batterySnapshot(applicationContext)
             val payload = payloadBuilder.buildTrackingPayload(
-                currentProfile,
-                currentLocation,
-                batteryLevel,
-                charging
+                profile = currentProfile,
+                location = currentLocation,
+                batteryLevel = batteryLevel,
+                charging = charging,
+                serialNumber = config.serialNumber,
+                id = config.id
             )
             mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
         }
@@ -212,10 +216,10 @@ class LocationTrackingService : Service() {
             val result = if (!ready || currentProfile == null || currentLocation == null || !config.isComplete) {
                 Result.failure(IllegalStateException("SOS active, waiting for location or MQTT data"))
             } else {
-                val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation)
+                val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, serialNumber = config.serialNumber, id = config.id)
                 val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS) == true
                 if (published) Result.success(Unit)
-                else Result.success(Unit)
+                else Result.failure(IllegalStateException("SOS queued or failed to publish; check MQTT status"))
             }
             _sosResult.emit(result)
         }
@@ -234,10 +238,10 @@ class LocationTrackingService : Service() {
                 currentLocation == null -> Result.failure(IllegalStateException("SOS cleared locally; location is not available"))
                 !config.isComplete -> Result.failure(IllegalStateException("SOS cleared locally; MQTT configuration is incomplete"))
                 else -> {
-                    val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, sos = 0)
+                    val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, sos = 0, serialNumber = config.serialNumber, id = config.id)
                     val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS) == true
                     if (published) Result.success(Unit)
-                    else Result.success(Unit)
+                    else Result.failure(IllegalStateException("SOS clear queued or failed to publish; check MQTT status"))
                 }
             }
             _sosResult.emit(result)
@@ -261,7 +265,6 @@ class LocationTrackingService : Service() {
                 } else {
                     locationIntervalMs = newInterval
                 }
-                if (config.isComplete) mqttManager?.connect(config)
             }
         }
     }
@@ -270,7 +273,6 @@ class LocationTrackingService : Service() {
         locationJob?.cancel()
         heartRateJob?.cancel()
         mqttConfigJob?.cancel()
-        mqttManager?.disconnect()
         serviceScope.cancel()
         super.onDestroy()
     }

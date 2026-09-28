@@ -6,15 +6,19 @@ data class MqttConfig(
     val wsPort: Int? = null,
     val username: String = "",
     val password: String = "",
+    val serialNumber: String = "",
+    val id: String = "",
     val useWebSocket: Boolean = false,
     val personelDataTopic: String = "",
     val personelSosTopic: String = "",
     val intervalMs: Long? = 5_000L
 ) {
+    private val selectedPort: Int?
+        get() = if (useWebSocket) wsPort else tcpPort
+
     val isConnectionComplete: Boolean
         get() = host.isNotBlank() &&
-            tcpPort != null &&
-            wsPort != null &&
+            selectedPort?.let { it in 1..65535 } == true &&
             username.isNotBlank() &&
             password.isNotBlank()
 
@@ -89,5 +93,6 @@ data class MqttUiState(
     val config: MqttConfig = MqttConfig(),
     val connectionState: MqttConnectionState = MqttConnectionState.NOT_CONFIGURED,
     val error: String? = null,
-    val saved: Boolean = false
+    val saved: Boolean = false,
+    val testResult: String? = null
 )

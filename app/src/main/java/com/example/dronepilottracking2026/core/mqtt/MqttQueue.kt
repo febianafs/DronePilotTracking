@@ -22,7 +22,7 @@ class MqttQueueManager(private val context: Context) {
 
     suspend fun save(topic: String, payload: String, qos: Int) {
         context.mqttQueueDataStore.edit { preferences ->
-            val messages = JSONArray(preferences[key].orEmpty())
+            val messages = parseQueue(preferences[key].orEmpty())
             messages.put(JSONObject().apply {
                 put("id", System.currentTimeMillis())
                 put("topic", topic)
@@ -59,15 +59,22 @@ class MqttQueueManager(private val context: Context) {
 
     private suspend fun readMessages(): List<MqttQueueEntity> {
         val raw = context.mqttQueueDataStore.data.first()[key].orEmpty()
-        val json = JSONArray(raw)
-        return (0 until json.length()).map { index ->
-            val item = json.getJSONObject(index)
-            MqttQueueEntity(
-                id = item.getLong("id"),
-                topic = item.getString("topic"),
-                payload = item.getString("payload"),
-                qos = item.getInt("qos")
-            )
+        val json = parseQueue(raw)
+        return (0 until json.length()).mapNotNull { index ->
+            runCatching {
+                val item = json.getJSONObject(index)
+                MqttQueueEntity(
+                    id = item.getLong("id"),
+                    topic = item.getString("topic"),
+                    payload = item.getString("payload"),
+                    qos = item.getInt("qos")
+                )
+            }.getOrNull()
         }
+    }
+
+    private fun parseQueue(raw: String): JSONArray {
+        if (raw.isBlank()) return JSONArray()
+        return runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
     }
 }
