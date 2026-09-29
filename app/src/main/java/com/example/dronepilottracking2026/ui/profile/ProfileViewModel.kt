@@ -1,6 +1,8 @@
 package com.example.dronepilottracking2026.ui.profile
 
 import android.app.Application
+import android.net.Uri
+import java.io.File
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.dronepilottracking2026.data.local.ProfileDataStore
@@ -10,6 +12,8 @@ import com.example.dronepilottracking2026.data.model.ProfileUiState
 import com.example.dronepilottracking2026.data.model.ProfileLoadState
 import com.example.dronepilottracking2026.data.model.validateProfile
 import com.example.dronepilottracking2026.data.repository.ProfileRepository
+import com.example.dronepilottracking2026.core.location.LocationTrackingService
+import com.example.dronepilottracking2026.DronePilotApplication
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,6 +28,7 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
 
     private val _uiState = MutableStateFlow(ProfileUiState())
     val uiState: StateFlow<ProfileUiState> = _uiState.asStateFlow()
+    private var pendingAvatarUri: String? = null
 
     init {
         viewModelScope.launch {
@@ -32,6 +37,13 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
                 _loadState.value = ProfileLoadState.Ready(loaded)
                 _uiState.update { state -> state.copy(profile = loaded) }
             }
+        }
+        val manager = (application as DronePilotApplication).mqttManager
+        manager.onPublishFailed = { _, _ ->
+            _uiState.update { it.copy(isAvatarSending = false) }
+        }
+        manager.onPublishSucceeded = { _, kind ->
+            if (kind == "AVATAR") markAvatarSent()
         }
     }
 
@@ -54,20 +66,67 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        val previousProfile = _uiState.value.profile
         val profile = PersonnelProfile(
             name = name.trim(),
             nrp = nrp.trim(),
-            avatarUri = avatarUri
+            avatarUri = avatarUri,
+            avatarSentUri = if (previousProfile.avatarUri == avatarUri) previousProfile.avatarSentUri else null
         )
 
         viewModelScope.launch {
             val wasEditing = _uiState.value.isEditing
             _uiState.update { it.copy(isSaving = true, error = null) }
             repository.save(profile)
-            _uiState.value = ProfileUiState(
-                profile = profile,
-                notification = if (wasEditing) "PROFILE UPDATED" else "PROFILE SAVED"
-            )
+            if (wasEditing && previousProfile.avatarUri != profile.avatarUri) {
+                val oldAvatar = previousProfile.avatarUri
+                if (oldAvatar != null && oldAvatar.startsWith("file:")) {
+                    runCatching { File(Uri.parse(oldAvatar).path.orEmpty()).delete() }
+                }
+            }
+            if (wasEditing) {
+                _uiState.update {
+                    it.copy(
+                        profile = profile,
+                        isSaving = false,
+                        notification = "PROFILE UPDATED",
+                        error = null
+                    )
+                }
+            } else {
+                _uiState.value = ProfileUiState(
+                    profile = profile,
+                    notification = "PROFILE SAVED"
+                )
+            }
+
+            val avatarChanged = previousProfile.avatarUri != profile.avatarUri
+            if (avatarChanged && !profile.avatarUri.isNullOrBlank()) {
+                sendAvatar()
+            }
+        }
+    }
+
+    fun sendAvatar() {
+        val current = _uiState.value.profile
+        val avatarUri = current.avatarUri ?: return
+        if (_uiState.value.isAvatarSending) return
+        pendingAvatarUri = avatarUri
+        _uiState.update { it.copy(isAvatarSending = true, error = null) }
+        LocationTrackingService.requestSendAvatar(getApplication<Application>())
+    }
+
+    private fun markAvatarSent() {
+        val current = _uiState.value.profile
+        val pending = pendingAvatarUri ?: return
+        if (current.avatarUri != pending) return
+        viewModelScope.launch {
+            val updated = current.copy(avatarSentUri = pending)
+            repository.save(updated)
+            _uiState.update {
+                it.copy(profile = updated, isAvatarSending = false, notification = "AVATAR SENT")
+            }
+            pendingAvatarUri = null
         }
     }
 

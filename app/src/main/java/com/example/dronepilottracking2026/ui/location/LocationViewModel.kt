@@ -60,6 +60,7 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun startBackgroundTracking() {
+        if (serviceLocationJob?.isActive == true) return
         locationJob?.cancel()
         serviceLocationJob?.cancel()
         lastAccepted = null

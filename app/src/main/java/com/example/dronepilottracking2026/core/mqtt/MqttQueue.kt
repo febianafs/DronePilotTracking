@@ -14,13 +14,14 @@ data class MqttQueueEntity(
     val id: Long,
     val topic: String,
     val payload: String,
-    val qos: Int
+    val qos: Int,
+    val kind: String = "NORMAL"
 )
 
 class MqttQueueManager(private val context: Context) {
     private val key = stringPreferencesKey("messages")
 
-    suspend fun save(topic: String, payload: String, qos: Int) {
+    suspend fun save(topic: String, payload: String, qos: Int, kind: String = "NORMAL") {
         context.mqttQueueDataStore.edit { preferences ->
             val messages = parseQueue(preferences[key].orEmpty())
             messages.put(JSONObject().apply {
@@ -28,6 +29,7 @@ class MqttQueueManager(private val context: Context) {
                 put("topic", topic)
                 put("payload", payload)
                 put("qos", qos)
+                put("kind", kind)
             })
             preferences[key] = messages.toString()
         }
@@ -51,6 +53,7 @@ class MqttQueueManager(private val context: Context) {
                         put("topic", message.topic)
                         put("payload", message.payload)
                         put("qos", message.qos)
+                        put("kind", message.kind)
                     })
                 }
             }.toString()
@@ -67,7 +70,8 @@ class MqttQueueManager(private val context: Context) {
                     id = item.getLong("id"),
                     topic = item.getString("topic"),
                     payload = item.getString("payload"),
-                    qos = item.getInt("qos")
+                    qos = item.getInt("qos"),
+                    kind = item.optString("kind", "NORMAL")
                 )
             }.getOrNull()
         }

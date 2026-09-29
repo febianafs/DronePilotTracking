@@ -45,9 +45,13 @@ class LocationTrackingService : Service() {
         private const val ACTION_STOP = "com.example.dronepilottracking2026.action.STOP_LOCATION"
         private const val ACTION_SOS = "com.example.dronepilottracking2026.action.SOS"
         private const val ACTION_CLEAR_SOS = "com.example.dronepilottracking2026.action.CLEAR_SOS"
+        private const val ACTION_SEND_AVATAR = "com.example.dronepilottracking2026.action.SEND_AVATAR"
         private const val DEFAULT_INTERVAL_MS = 5_000L
 
-        private val _locationUpdates = MutableSharedFlow<Result<LocationData>>(extraBufferCapacity = 64)
+        private val _locationUpdates = MutableSharedFlow<Result<LocationData>>(
+            replay = 1,
+            extraBufferCapacity = 64
+        )
         val locationUpdates = _locationUpdates.asSharedFlow()
         private val _lastLocation = MutableStateFlow<LocationData?>(null)
         val lastLocation = _lastLocation.asStateFlow()
@@ -55,6 +59,15 @@ class LocationTrackingService : Service() {
         val sosResult = _sosResult.asSharedFlow()
         private val _sosActive = MutableStateFlow(false)
         val sosActive = _sosActive.asStateFlow()
+        private val _avatarSendResult = MutableSharedFlow<Result<Unit>>(extraBufferCapacity = 8)
+        val avatarSendResult = _avatarSendResult.asSharedFlow()
+
+        fun requestSendAvatar(context: android.content.Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, LocationTrackingService::class.java).setAction(ACTION_SEND_AVATAR)
+            )
+        }
 
         fun requestSos(context: android.content.Context) {
             ContextCompat.startForegroundService(
@@ -120,6 +133,10 @@ class LocationTrackingService : Service() {
             ACTION_CLEAR_SOS -> {
                 startTracking()
                 clearSos()
+            }
+            ACTION_SEND_AVATAR -> {
+                startTracking()
+                sendAvatar()
             }
             else -> startTracking()
         }
@@ -197,6 +214,40 @@ class LocationTrackingService : Service() {
                 id = config.id
             )
             mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
+        }
+    }
+
+    private fun sendAvatar() {
+        serviceScope.launch {
+            val ready = withTimeoutOrNull(15_000L) {
+                while (profile == null || lastLocation.value == null || !mqttConfig.isComplete) {
+                    delay(100L)
+                }
+                true
+            } == true
+            val currentProfile = profile
+            val currentLocation = lastLocation.value
+            val config = mqttConfig
+            val result = if (!ready || currentProfile == null || currentLocation == null || !config.isComplete) {
+                Result.failure(IllegalStateException("Avatar pending; location or MQTT data is not ready"))
+            } else {
+                val (batteryLevel, charging) = batterySnapshot(applicationContext)
+                val payload = payloadBuilder.buildTrackingPayload(
+                    profile = currentProfile,
+                    location = currentLocation,
+                    batteryLevel = batteryLevel,
+                    charging = charging,
+                    serialNumber = config.serialNumber,
+                    id = config.id,
+                    includeAvatar = true
+                )
+                if (mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA, kind = "AVATAR") == true) {
+                    Result.success(Unit)
+                } else {
+                    Result.failure(IllegalStateException("Avatar pending; payload queued or publish failed"))
+                }
+            }
+            _avatarSendResult.emit(result)
         }
     }
 

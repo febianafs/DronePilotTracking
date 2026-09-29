@@ -18,6 +18,7 @@ class ProfileDataStore(private val context: Context) {
         val name = stringPreferencesKey("name")
         val nrp = stringPreferencesKey("nrp")
         val avatarUri = stringPreferencesKey("avatar_uri")
+        val avatarSentUri = stringPreferencesKey("avatar_sent_uri")
     }
 
     val profile: Flow<PersonnelProfile?> = context.profileDataStore.data.map { preferences ->
@@ -27,7 +28,8 @@ class ProfileDataStore(private val context: Context) {
             PersonnelProfile(
                 name = preferences[Keys.name].orEmpty(),
                 nrp = preferences[Keys.nrp].orEmpty(),
-                avatarUri = preferences[Keys.avatarUri]
+                avatarUri = preferences[Keys.avatarUri],
+                avatarSentUri = preferences[Keys.avatarSentUri]
             )
         }
     }
@@ -41,6 +43,11 @@ class ProfileDataStore(private val context: Context) {
                 preferences.remove(Keys.avatarUri)
             } else {
                 preferences[Keys.avatarUri] = profile.avatarUri
+            }
+            if (profile.avatarSentUri == null) {
+                preferences.remove(Keys.avatarSentUri)
+            } else {
+                preferences[Keys.avatarSentUri] = profile.avatarSentUri
             }
         }
     }
