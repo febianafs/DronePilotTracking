@@ -1,5 +1,7 @@
 package com.example.dronepilottracking2026.ui.screen
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,28 +19,42 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.dronepilottracking2026.data.model.MqttConfig
 import com.example.dronepilottracking2026.data.model.MqttConnectionState
+
+import com.example.dronepilottracking2026.data.model.DeliveryMode
+import com.example.dronepilottracking2026.core.dmr.DmrReadiness
+import com.example.dronepilottracking2026.core.dmr.DmrSendStatus
 import com.example.dronepilottracking2026.ui.mqtt.MqttViewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +74,7 @@ import com.example.dronepilottracking2026.ui.theme.TacticalText
 fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Modifier) {
     val mqttState by (viewModel?.uiState ?: kotlinx.coroutines.flow.MutableStateFlow(com.example.dronepilottracking2026.data.model.MqttUiState())).collectAsStateWithLifecycle()
     val savedConfig = mqttState.config
+    val deliveryMode = mqttState.deliveryMode
     var server by remember(savedConfig.host) { mutableStateOf(savedConfig.host) }
     var tcpPort by remember(savedConfig.tcpPort) { mutableStateOf(savedConfig.tcpPort?.toString().orEmpty()) }
     var wsPort by remember(savedConfig.wsPort) { mutableStateOf(savedConfig.wsPort?.toString().orEmpty()) }
@@ -68,6 +86,29 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
     var personelDataTopic by remember(savedConfig.personelDataTopic) { mutableStateOf(savedConfig.personelDataTopic) }
     var personelSosTopic by remember(savedConfig.personelSosTopic) { mutableStateOf(savedConfig.personelSosTopic) }
     var interval by remember(savedConfig.intervalMs) { mutableStateOf(savedConfig.intervalMs?.toIntervalLabel().orEmpty()) }
+    var pendingMode by remember { mutableStateOf<DeliveryMode?>(null) }
+    var showNotificationAccessDialog by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(deliveryMode) {
+        viewModel?.refreshDmrReadiness()
+    }
+
+    LaunchedEffect(deliveryMode, mqttState.dmrNotificationAccessGranted) {
+        showNotificationAccessDialog = deliveryMode == DeliveryMode.DMR &&
+            !mqttState.dmrNotificationAccessGranted
+    }
+
+    DisposableEffect(lifecycleOwner, deliveryMode) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel?.refreshDmrReadiness()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val selectedPort = (if (useWebSocket) wsPort else tcpPort).toIntOrNull()
     val connectionReady = server.isNotBlank() &&
@@ -101,10 +142,60 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         ScreenTitle(
-            title = "MQTT SETTINGS",
-            subtitle = "MESSAGE BROKER CONFIGURATION"
+            title = "TRACKING SETTINGS",
+            subtitle = "INTERNET OR DMR RADIO"
         )
 
+        DeliveryModeSelector(
+            mode = deliveryMode,
+            onModeChange = { nextMode ->
+                if (nextMode != deliveryMode) pendingMode = nextMode
+            }
+        )
+
+        if (deliveryMode == DeliveryMode.DMR) {
+            DmrModeCard(
+                readiness = mqttState.dmrReadiness,
+                dmrSlot = mqttState.dmrSlot,
+                sendStatus = mqttState.dmrSendStatus,
+                onOpenDmr = { viewModel?.openDmrApp() },
+                onDmrSlotChange = { viewModel?.saveDmrSlot(it) }
+            )
+
+            SettingsSection(title = "DEVICE IDENTITY") {
+                TacticalField(
+                    value = serialNumber,
+                    onValueChange = { serialNumber = it },
+                    label = "SERIAL NUMBER",
+                    placeholder = "Optional device serial number"
+                )
+                TacticalField(
+                    value = id,
+                    onValueChange = { id = it },
+                    label = "ID",
+                    placeholder = "Required for DMR payload"
+                )
+                Button(
+                    onClick = { viewModel?.saveSerialNumberAndId(serialNumber.trim(), id.trim()) },
+                    enabled = id.isNotBlank(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = TacticalCardElevated,
+                        contentColor = TacticalCyan
+                    )
+                ) {
+                    Text(
+                        text = "SAVE SERIAL NUMBER & ID",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.7.sp
+                    )
+                }
+            }
+        } else {
         Text(
             text = when (mqttState.connectionState) {
                 MqttConnectionState.CONNECTED -> "● CONNECTED"
@@ -307,6 +398,332 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
                 letterSpacing = 0.6.sp
             )
         }
+        }
+    }
+
+    pendingMode?.let { nextMode ->
+        val dialogShape = RoundedCornerShape(12.dp)
+        val buttonShape = RoundedCornerShape(8.dp)
+
+        AlertDialog(
+            onDismissRequest = { pendingMode = null },
+            modifier = Modifier.border(1.dp, TacticalBorder, dialogShape),
+            shape = dialogShape,
+            containerColor = TacticalCard,
+            tonalElevation = 0.dp,
+            title = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "SWITCH DELIVERY MODE",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // pengganti HorizontalDivider
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(TacticalBorder)
+                    )
+                    Text(
+                        text = if (nextMode == DeliveryMode.DMR) {
+                            "Switch to DMR mode? MQTT will be stopped and data will be sent over radio."
+                        } else {
+                            "Switch to INTERNET mode? DMR delivery will be stopped and MQTT will be used."
+                        },
+                        color = TacticalMuted,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel?.setDeliveryMode(nextMode)
+                        pendingMode = null
+                    },
+                    modifier = Modifier
+                        .clip(buttonShape)
+                        .background(TacticalCyan) // ganti sesuai warna aksen lo
+                ) {
+                    Text(
+                        text = "SWITCH",
+                        color = TacticalCard,     // warna gelap biar teks kebaca di atas cyan
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                }
+            },
+            dismissButton = {
+                // pengganti OutlinedButton
+                TextButton(
+                    onClick = { pendingMode = null },
+                    modifier = Modifier
+                        .clip(buttonShape)
+                        .border(1.dp, TacticalBorder, buttonShape)
+                ) {
+                    Text(
+                        text = "CANCEL",
+                        color = TacticalMuted,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                }
+            }
+        )
+    }
+
+    if (showNotificationAccessDialog) {
+        val dialogShape = RoundedCornerShape(12.dp)
+        AlertDialog(
+            onDismissRequest = { showNotificationAccessDialog = false },
+            modifier = Modifier.border(1.dp, TacticalBorder, dialogShape),
+            shape = dialogShape,
+            containerColor = TacticalCard,
+            tonalElevation = 0.dp,
+            title = {
+                Text(
+                    text = "NOTIFICATION ACCESS REQUIRED",
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "DMR mode needs notification access to monitor Tooker status. Android Settings will open so you can allow it.",
+                    color = TacticalMuted,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showNotificationAccessDialog = false
+                        viewModel?.openDmrNotificationAccessSettings()
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TacticalCyan)
+                ) {
+                    Text(
+                        text = "OPEN SETTINGS",
+                        color = TacticalCard,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNotificationAccessDialog = false }) {
+                    Text(
+                        text = "LATER",
+                        color = TacticalMuted,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun DeliveryModeSelector(
+    mode: DeliveryMode,
+    onModeChange: (DeliveryMode) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text(
+            text = "SELECT TRACKING MODE",
+            color = TacticalMuted,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(TacticalCard)
+                .border(1.dp, TacticalBorder, RoundedCornerShape(18.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            DeliveryModeOption(
+                label = "INTERNET",
+                selected = mode == DeliveryMode.INTERNET,
+                onClick = { onModeChange(DeliveryMode.INTERNET) },
+                modifier = Modifier.weight(1f)
+            )
+            DeliveryModeOption(
+                label = "DMR",
+                selected = mode == DeliveryMode.DMR,
+                onClick = { onModeChange(DeliveryMode.DMR) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeliveryModeOption(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) TacticalCyan else Color.Transparent,
+        animationSpec = tween(durationMillis = 180),
+        label = "delivery-mode-background"
+    )
+    val contentColor by animateColorAsState(
+        targetValue = if (selected) TacticalButtonText else TacticalMuted,
+        animationSpec = tween(durationMillis = 180),
+        label = "delivery-mode-text"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(15.dp))
+            .background(containerColor)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = contentColor,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun DmrModeCard(
+    readiness: DmrReadiness,
+    dmrSlot: Int,
+    sendStatus: DmrSendStatus?,
+    onOpenDmr: () -> Unit,
+    onDmrSlotChange: (Int) -> Unit
+) {
+    SettingsSection(title = "DMR RADIO HANDOFF") {
+        ReadinessRow("DMR APP", if (readiness.installed) "INSTALLED" else "NOT INSTALLED", readiness.installed)
+        ReadinessRow("APP STATUS", if (readiness.running) "RUNNING" else "NOT RUNNING", readiness.running)
+        Text(
+            text = if (readiness.isReady) {
+                "DMR app is running. Local handoff is ready."
+            } else {
+                "Open the DMR app before starting DMR tracking."
+            },
+            color = TacticalMuted,
+            fontSize = 11.sp
+        )
+        DmrSlotSelector(
+            slot = dmrSlot,
+            onSlotChange = onDmrSlotChange
+        )
+        sendStatus?.let {
+            Text(
+                text = if (it.success) "DMR HANDOFF OK" else "DMR HANDOFF FAILED",
+                color = if (it.success) com.example.dronepilottracking2026.ui.theme.TacticalGreen else com.example.dronepilottracking2026.ui.theme.TacticalRed,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+            )
+        }
+
+        Button(
+            onClick = onOpenDmr,
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = TacticalCardElevated,
+                contentColor = TacticalText
+            )
+        ) {
+            Text("BUKA DMR", fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.7.sp)
+        }
+    }
+}
+
+private val dmrSlotOptions = (1..6).toList()
+
+@Composable
+private fun DmrSlotSelector(
+    slot: Int,
+    onSlotChange: (Int) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text(
+            text = "DMR SLOT",
+            color = TacticalMuted,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        )
+        Box {
+            OutlinedTextField(
+                value = "SLOT $slot  •  ${(slot - 1) * 2} SECOND OFFSET",
+                onValueChange = {},
+                modifier = Modifier.fillMaxWidth(),
+                readOnly = true,
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = TacticalCardElevated,
+                    unfocusedContainerColor = TacticalCardElevated,
+                    focusedBorderColor = TacticalAmber,
+                    unfocusedBorderColor = TacticalBorder,
+                    focusedTextColor = TacticalText,
+                    unfocusedTextColor = TacticalText
+                )
+            )
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clickable { expanded = true }
+            )
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                dmrSlotOptions.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text("SLOT $option  •  ${(option - 1) * 2} SECOND OFFSET") },
+                        onClick = {
+                            onSlotChange(option)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReadinessRow(label: String, value: String, ready: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = TacticalMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+        Text(
+            value,
+            color = if (ready) com.example.dronepilottracking2026.ui.theme.TacticalGreen else TacticalAmber,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -405,7 +822,7 @@ private fun SettingsSection(
             .fillMaxWidth()
             .border(1.dp, TacticalBorder, RoundedCornerShape(18.dp))
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
         content = {
             Text(
                 text = title,
@@ -527,6 +944,13 @@ private fun ScreenTitle(title: String, subtitle: String) {
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.2.sp
+        )
+        Spacer(modifier = Modifier.height(5.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(TacticalBorder.copy(alpha = 0.55f))
         )
     }
 }

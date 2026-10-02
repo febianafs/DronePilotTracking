@@ -29,6 +29,39 @@ class MqttPayloadBuilder(private val context: Context) {
         id: String
     ): String {
         val now = System.currentTimeMillis()
+        val heartRate = BluetoothLeService.heartRateForPayload()
+        val heartRateConnected = heartRate != null
+
+        val payload = TrackingPayload(
+            timestamp = now,
+            serialNumber = "",
+            androidId = androidId(),
+            appVersion = appVersion(),
+            identity = IdentityPayload(
+                id = profile.id,
+                nrp = profile.nrp,
+                name = profile.name,
+                avatarUri = profile.avatarUri.orEmpty()
+            ),
+            gps = GpsPayload(
+                gpsTimestamp = location.timestamp,
+                latitude = location.latitude,
+                longitude = location.longitude,
+                accuracy = location.accuracyMeters,
+                source = location.source.label,
+                satellites = location.satelliteCount
+            ),
+            radioHealth = RadioHealthPayload(
+                heartrateTimestamp = now,
+                heartrate = heartRate,
+                connected = heartRateConnected
+            ),
+            battery = BatteryPayload(
+                batteryTimestamp = now,
+                level = batteryLevel,
+                charging = charging
+            )
+        )
 
         return JSONObject().apply {
             put("source", "INTERNET")
@@ -49,7 +82,7 @@ class MqttPayloadBuilder(private val context: Context) {
             })
             put("radio_health", JSONObject().apply {
                 put("heartrate_timestamp", now)
-                put("heartrate", BluetoothLeService.bpm.value)
+                put("heartrate", heartRate ?: JSONObject.NULL)
             })
             put("battery", JSONObject().apply {
                 put("battery_timestamp", now)
@@ -84,6 +117,10 @@ class MqttPayloadBuilder(private val context: Context) {
         context.contentResolver,
         Settings.Secure.ANDROID_ID
     ).orEmpty()
+
+    private fun appVersion(): String = runCatching {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+    }.getOrDefault("")
 
     private fun avatarBase64Cached(uri: String?): String? {
         if (uri == cachedAvatarUri) return cachedAvatarBase64

@@ -47,6 +47,7 @@ import com.example.dronepilottracking2026.ui.theme.TacticalMuted
 import com.example.dronepilottracking2026.ui.theme.TacticalText
 import com.example.dronepilottracking2026.ui.location.LocationStatusCard
 import com.example.dronepilottracking2026.ui.location.LocationViewModel
+import com.example.dronepilottracking2026.data.model.DeliveryMode
 
 
 @Composable
@@ -56,6 +57,9 @@ fun TrackingStatusScreen(
     avatarUri: String? = null,
     onEditProfile: () -> Unit,
     locationViewModel: LocationViewModel? = null,
+    deliveryMode: DeliveryMode = DeliveryMode.INTERNET,
+    dmrReady: Boolean = true,
+    onOpenDmr: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -68,6 +72,8 @@ fun TrackingStatusScreen(
     ) {
         ScreenHeader()
 
+        TrackingModeStatus(deliveryMode = deliveryMode)
+
         ProfileIdentityCard(
             name = name,
             nrp = nrp,
@@ -75,7 +81,14 @@ fun TrackingStatusScreen(
             onEditProfile = onEditProfile
         )
 
-        locationViewModel?.let { LocationStatusCard(viewModel = it) }
+        locationViewModel?.let {
+            LocationStatusCard(
+                viewModel = it,
+                deliveryMode = deliveryMode,
+                dmrReady = dmrReady,
+                onOpenDmr = onOpenDmr
+            )
+        }
 
         Spacer(modifier = Modifier.weight(1f))
 
@@ -101,6 +114,50 @@ private fun ScreenHeader() {
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.4.sp
         )
+    }
+}
+
+@Composable
+private fun TrackingModeStatus(deliveryMode: DeliveryMode) {
+    val modeColor = if (deliveryMode == DeliveryMode.DMR) TacticalAmber else TacticalCyan
+    val modeLabel = if (deliveryMode == DeliveryMode.DMR) "DMR" else "INTERNET"
+    val shape = RoundedCornerShape(5.dp)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(modeColor.copy(alpha = 0.14f))
+            .border(1.dp, modeColor.copy(alpha = 0.32f), shape)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "TRACKING MODE",
+            color = TacticalMuted,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.9.sp
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(modeColor)
+            )
+            Text(
+                text = modeLabel,
+                color = modeColor,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+            )
+        }
     }
 }
 

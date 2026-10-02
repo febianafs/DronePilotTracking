@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -21,6 +22,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.dronepilottracking2026.data.model.ProfileLoadState
@@ -61,9 +65,22 @@ private fun DronePilotApp() {
     val locationViewModel: LocationViewModel = viewModel()
     val mqttViewModel: MqttViewModel = viewModel()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val sosActive by LocationTrackingService.sosActive.collectAsStateWithLifecycle()
     val profileLoadState by profileViewModel.loadState.collectAsStateWithLifecycle()
     val profileUiState by profileViewModel.uiState.collectAsStateWithLifecycle()
+    val mqttUiState by mqttViewModel.uiState.collectAsStateWithLifecycle()
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                mqttViewModel.refreshDmrReadiness()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     var currentDestinationName by rememberSaveable { mutableStateOf(AppDestination.HOME.name) }
     val currentDestination = AppDestination.valueOf(currentDestinationName)
 
@@ -117,7 +134,10 @@ private fun DronePilotApp() {
                                 nrp = profile.nrp,
                                 avatarUri = profile.avatarUri,
                                 onEditProfile = profileViewModel::startEditing,
-                                locationViewModel = locationViewModel
+                                locationViewModel = locationViewModel,
+                                deliveryMode = mqttUiState.deliveryMode,
+                                dmrReady = mqttUiState.dmrReadiness.isReady,
+                                onOpenDmr = mqttViewModel::openDmrApp
                             )
 
                             AppDestination.HEART_RATE -> HeartRateScreen(viewModel = bluetoothViewModel)

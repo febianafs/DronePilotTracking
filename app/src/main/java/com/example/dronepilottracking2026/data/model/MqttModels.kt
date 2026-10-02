@@ -58,7 +58,7 @@ data class GpsPayload(
 
 data class RadioHealthPayload(
     val heartrateTimestamp: Long,
-    val heartrate: Int,
+    val heartrate: Int?,
     val connected: Boolean
 )
 
@@ -91,6 +91,12 @@ enum class MqttConnectionState {
 
 data class MqttUiState(
     val config: MqttConfig = MqttConfig(),
+    val deliveryMode: DeliveryMode = DeliveryMode.INTERNET,
+    val dmrIntervalMs: Long = DEFAULT_DMR_INTERVAL_MS,
+    val dmrSlot: Int = DEFAULT_DMR_SLOT,
+    val dmrNotificationAccessGranted: Boolean = false,
+    val dmrReadiness: com.example.dronepilottracking2026.core.dmr.DmrReadiness = com.example.dronepilottracking2026.core.dmr.DmrReadiness(),
+    val dmrSendStatus: com.example.dronepilottracking2026.core.dmr.DmrSendStatus? = null,
     val connectionState: MqttConnectionState = MqttConnectionState.NOT_CONFIGURED,
     val error: String? = null,
     val saved: Boolean = false,

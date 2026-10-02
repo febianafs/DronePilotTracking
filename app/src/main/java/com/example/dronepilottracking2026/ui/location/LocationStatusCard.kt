@@ -39,6 +39,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.dronepilottracking2026.data.model.LocationStatus
 import com.example.dronepilottracking2026.data.model.LocationUiState
+import com.example.dronepilottracking2026.data.model.DeliveryMode
 import com.example.dronepilottracking2026.ui.theme.TacticalAmber
 import com.example.dronepilottracking2026.ui.theme.TacticalBorder
 import com.example.dronepilottracking2026.ui.theme.TacticalButtonText
@@ -53,6 +54,9 @@ import com.example.dronepilottracking2026.ui.theme.TacticalText
 @Composable
 fun LocationStatusCard(
     viewModel: LocationViewModel,
+    deliveryMode: DeliveryMode = DeliveryMode.INTERNET,
+    dmrReady: Boolean = true,
+    onOpenDmr: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -66,7 +70,11 @@ fun LocationStatusCard(
         ActivityResultContracts.RequestPermission()
     ) { }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(deliveryMode, dmrReady) {
+        if (deliveryMode == DeliveryMode.DMR && !dmrReady) {
+            viewModel.stopBackgroundTracking()
+            return@LaunchedEffect
+        }
         if (hasLocationPermission(context)) {
             viewModel.startBackgroundTracking()
         } else {
@@ -81,6 +89,9 @@ fun LocationStatusCard(
 
     LocationStatusCardContent(
         state = state,
+        deliveryMode = deliveryMode,
+        dmrReady = dmrReady,
+        onOpenDmr = onOpenDmr,
         modifier = modifier,
         onEnableBackground = {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -95,6 +106,9 @@ fun LocationStatusCard(
 @Composable
 private fun LocationStatusCardContent(
     state: LocationUiState,
+    deliveryMode: DeliveryMode,
+    dmrReady: Boolean,
+    onOpenDmr: () -> Unit,
     modifier: Modifier = Modifier,
     onEnableBackground: () -> Unit
 ) {
@@ -114,6 +128,24 @@ private fun LocationStatusCardContent(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        if (deliveryMode == DeliveryMode.DMR && !dmrReady) {
+            Text(
+                "DMR mode is selected. Open DMR Walkie Talkie before location tracking starts.",
+                color = TacticalMuted,
+                fontSize = 11.sp
+            )
+            Button(
+                onClick = onOpenDmr,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = TacticalCyan,
+                    contentColor = TacticalButtonText
+                ),
+                shape = RoundedCornerShape(6.dp)
+            ) {
+                Text("OPEN DMR APP", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,

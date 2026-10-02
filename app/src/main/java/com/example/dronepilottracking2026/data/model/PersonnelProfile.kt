@@ -1,6 +1,7 @@
 package com.example.dronepilottracking2026.data.model
 
 data class PersonnelProfile(
+    val id: String = "",
     val name: String = "",
     val nrp: String = "",
     val avatarUri: String? = null

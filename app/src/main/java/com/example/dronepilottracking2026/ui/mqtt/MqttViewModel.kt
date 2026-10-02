@@ -4,9 +4,13 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.dronepilottracking2026.DronePilotApplication
+import com.example.dronepilottracking2026.core.dmr.DmrNotificationListener
+import com.example.dronepilottracking2026.core.dmr.DmrTransport
 import com.example.dronepilottracking2026.core.mqtt.MqttManager
 import com.example.dronepilottracking2026.core.mqtt.MqttManagerState
+import com.example.dronepilottracking2026.data.local.DeliverySettingsDataStore
 import com.example.dronepilottracking2026.data.local.MqttConfigDataStore
+import com.example.dronepilottracking2026.data.model.DeliveryMode
 import com.example.dronepilottracking2026.data.model.MqttConfig
 import com.example.dronepilottracking2026.data.model.MqttConnectionState
 import com.example.dronepilottracking2026.data.model.MqttUiState
@@ -15,19 +19,32 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+private data class DeliverySettingsSnapshot(
+    val config: MqttConfig,
+    val mode: DeliveryMode,
+    val dmrIntervalMs: Long,
+    val dmrSlot: Int
+)
+
 class MqttViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository = MqttConfigRepository(MqttConfigDataStore(application.applicationContext))
+    private val configRepository = MqttConfigRepository(MqttConfigDataStore(application.applicationContext))
+    private val deliverySettings = DeliverySettingsDataStore(application.applicationContext)
     private val manager = (application as DronePilotApplication).mqttManager
+    private val dmrTransport = DmrTransport(application.applicationContext)
     private val _uiState = MutableStateFlow(MqttUiState())
     val uiState: StateFlow<MqttUiState> = _uiState.asStateFlow()
 
     init {
         manager.onStateChanged = { state ->
-            _uiState.update { it.copy(connectionState = state.toUiState(), error = state.errorMessage()) }
+            _uiState.update {
+                it.copy(connectionState = state.toUiState(), error = state.errorMessage())
+            }
         }
+
         manager.onPublishFailed = { topic, reason ->
             val message = if (reason == "Queued offline") {
                 "Message queued offline for topic: $topic"
@@ -37,22 +54,99 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(error = message) }
         }
         viewModelScope.launch {
-            repository.config.collectLatest { config ->
-                _uiState.update {
-                    it.copy(
-                        config = config,
-                        connectionState = if (config.isComplete) it.connectionState else MqttConnectionState.NOT_CONFIGURED
-                    )
+            combine(
+                configRepository.config,
+                deliverySettings.mode,
+                deliverySettings.dmrIntervalMs,
+                deliverySettings.dmrSlot
+            ) { config, mode, dmrInterval, dmrSlot ->
+                DeliverySettingsSnapshot(config, mode, dmrInterval, dmrSlot)
+            }.collectLatest { (config, mode, dmrInterval, dmrSlot) ->
+                    _uiState.update {
+                        it.copy(
+                            config = config,
+                            deliveryMode = mode,
+                            dmrIntervalMs = dmrInterval,
+                            dmrSlot = dmrSlot,
+                            dmrNotificationAccessGranted = dmrTransport.isNotificationAccessGranted(),
+                            dmrReadiness = dmrTransport.readiness(),
+                            dmrSendStatus = DmrTransport.lastSendStatus.value,
+                            connectionState = when {
+                                mode == DeliveryMode.DMR -> MqttConnectionState.DISCONNECTED
+                                !config.isComplete -> MqttConnectionState.NOT_CONFIGURED
+                                else -> it.connectionState
+                            }
+                        )
+                    }
+                    if (mode == DeliveryMode.DMR) {
+                        manager.disableAutoReconnect()
+                    } else if (config.isComplete) {
+                        manager.connect(config)
+                    }
                 }
-                if (config.isComplete) manager.connect(config)
+        }
+
+        viewModelScope.launch {
+            DmrTransport.lastSendStatus.collectLatest { status ->
+                _uiState.update { it.copy(dmrSendStatus = status) }
             }
+        }
+
+        viewModelScope.launch {
+            combine(
+                DmrNotificationListener.listenerConnected,
+                DmrNotificationListener.tookerNotificationDetected
+            ) { _, _ -> dmrTransport.readiness() }
+                .collectLatest { readiness ->
+                    _uiState.update { it.copy(dmrReadiness = readiness) }
+                }
+        }
+    }
+
+    fun setDeliveryMode(mode: DeliveryMode) {
+        viewModelScope.launch {
+            deliverySettings.setMode(mode)
+            if (mode == DeliveryMode.DMR) manager.disableAutoReconnect()
+        }
+    }
+
+    fun refreshDmrReadiness() {
+        _uiState.update {
+            it.copy(
+                dmrReadiness = dmrTransport.readiness(),
+                dmrNotificationAccessGranted = dmrTransport.isNotificationAccessGranted(),
+                dmrSendStatus = DmrTransport.lastSendStatus.value
+            )
+        }
+    }
+
+    fun saveDmrInterval(intervalMs: Long) {
+        viewModelScope.launch { deliverySettings.setDmrInterval(intervalMs) }
+    }
+
+    fun saveDmrSlot(slot: Int) {
+        viewModelScope.launch { deliverySettings.setDmrSlot(slot) }
+    }
+
+    fun openDmrNotificationAccessSettings() {
+        dmrTransport.openNotificationAccessSettings()
+    }
+
+    fun openDmrApp() {
+        val opened = dmrTransport.openApp()
+        val readiness = dmrTransport.readiness()
+        _uiState.update {
+            it.copy(
+                dmrReadiness = readiness,
+                error = if (opened) null else readiness.failureMessage()
+            )
         }
     }
 
     fun saveSerialNumberAndId(serialNumber: String, id: String) {
         viewModelScope.launch {
             val updated = _uiState.value.config.copy(serialNumber = serialNumber, id = id)
-            repository.save(updated)
+            configRepository.save(updated)
             _uiState.update { it.copy(config = updated) }
         }
     }
@@ -60,7 +154,7 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
     fun saveInterval(intervalMs: Long) {
         viewModelScope.launch {
             val updated = _uiState.value.config.copy(intervalMs = intervalMs)
-            repository.save(updated)
+            configRepository.save(updated)
             _uiState.update { it.copy(config = updated) }
         }
     }
@@ -71,12 +165,19 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            repository.save(config)
+            configRepository.save(config)
             _uiState.update { it.copy(config = config, saved = true, error = null) }
+            if (_uiState.value.deliveryMode == DeliveryMode.INTERNET) {
+                manager.connect(config)
+            }
         }
     }
 
     fun testConnection(config: MqttConfig) {
+        if (_uiState.value.deliveryMode != DeliveryMode.INTERNET) {
+            _uiState.update { it.copy(error = "MQTT is disabled while DMR mode is active") }
+            return
+        }
         if (!config.isConnectionComplete) {
             _uiState.update { it.copy(testResult = "MQTT connection fields are incomplete") }
             return

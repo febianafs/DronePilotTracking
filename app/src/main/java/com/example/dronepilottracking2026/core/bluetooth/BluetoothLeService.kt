@@ -62,6 +62,9 @@ class BluetoothLeService : Service() {
             bpm.value = normalized
             bpmReading.tryEmit(normalized)
         }
+
+        fun heartRateForPayload(): Int? =
+            bpm.value.takeIf { connectionState.value == BleConnectionState.CONNECTED }
     }
 
     inner class LocalBinder : Binder() {
@@ -74,7 +77,6 @@ class BluetoothLeService : Service() {
     private var currentAddress: String? = null
     private var userRequestedDisconnect = false
     private var reconnectScheduled = false
-    private var lastContactLostRawBpm: Int? = null
 
     private val reconnectRunnable = Runnable {
         reconnectScheduled = false
@@ -167,7 +169,6 @@ class BluetoothLeService : Service() {
                         Log.w(TAG, "GATT close permission denied")
                     }
                     bluetoothGatt = null
-                    lastContactLostRawBpm = null
                     connectionState.value = BleConnectionState.DISCONNECTED
                     connectedDevice.value = lockedDevice.value
                     publishBpm(0)
@@ -208,16 +209,13 @@ class BluetoothLeService : Service() {
         ) {
             if (gatt.device.address != currentAddress || characteristic.uuid != HEART_RATE_CHARACTERISTIC) return
             val result = BleHeartRateParser.parse(characteristic.value ?: return) ?: return
-            val effectiveBpm = when {
-                result.bpm <= 0 -> 0
-                result.sensorContactSupported && !result.sensorContactDetected -> {
-                    lastContactLostRawBpm = result.bpm
-                    0
-                }
-                result.sensorContactSupported && lastContactLostRawBpm == result.bpm -> 0
-                else -> result.bpm
+            val effectiveBpm = if (
+                result.sensorContactSupported && !result.sensorContactDetected
+            ) {
+                0
+            } else {
+                result.bpm
             }
-            if (effectiveBpm > 0) lastContactLostRawBpm = null
             publishBpm(effectiveBpm)
         }
     }

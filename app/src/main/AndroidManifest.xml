@@ -19,6 +19,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <queries>
+        <package android:name="com.tooker.ptt" />
+    </queries>
+
     <application
         android:name=".DronePilotApplication"
         android:allowBackup="true"
@@ -33,6 +37,18 @@
             android:name=".core.bluetooth.BluetoothLeService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <service
+            android:name=".core.dmr.DmrNotificationListener"
+            android:exported="true"
+            android:label="DMR notification status"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+
 
         <service
             android:name=".core.location.LocationTrackingService"

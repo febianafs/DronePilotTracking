@@ -1,6 +1,5 @@
 package com.example.dronepilottracking2026.core.location
 
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -8,34 +7,56 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.ServiceCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.dronepilottracking2026.DronePilotApplication
 import com.example.dronepilottracking2026.R
+import com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService
+import com.example.dronepilottracking2026.core.dmr.DmrPayloadFormatter
+import com.example.dronepilottracking2026.core.dmr.DmrTransport
 import com.example.dronepilottracking2026.core.mqtt.MqttManager
 import com.example.dronepilottracking2026.core.mqtt.MqttPayloadBuilder
 import com.example.dronepilottracking2026.core.mqtt.batterySnapshot
+import com.example.dronepilottracking2026.data.local.DeliverySettingsDataStore
+import com.example.dronepilottracking2026.data.local.DmrSequenceDataStore
 import com.example.dronepilottracking2026.data.local.MqttConfigDataStore
 import com.example.dronepilottracking2026.data.local.ProfileDataStore
+import com.example.dronepilottracking2026.data.model.DEFAULT_DMR_INTERVAL_MS
+import com.example.dronepilottracking2026.data.model.DEFAULT_DMR_SLOT
+import com.example.dronepilottracking2026.data.model.DMR_CYCLE_MS
+import com.example.dronepilottracking2026.data.model.DMR_SLOT_GRACE_MS
+import com.example.dronepilottracking2026.data.model.DMR_SLOT_SPACING_MS
+import com.example.dronepilottracking2026.data.model.DMR_SOS_REPEAT_INTERVAL_MS
+import com.example.dronepilottracking2026.data.model.DeliveryMode
+import com.example.dronepilottracking2026.data.model.LocationData
 import com.example.dronepilottracking2026.data.model.MqttConfig
 import com.example.dronepilottracking2026.data.model.PersonnelProfile
-import com.example.dronepilottracking2026.data.model.LocationData
 import com.example.dronepilottracking2026.data.repository.LocationRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+
+private data class DmrSettingsSnapshot(
+    val mode: DeliveryMode,
+    val config: MqttConfig,
+    val intervalMs: Long,
+    val slot: Int
+)
 
 class LocationTrackingService : Service() {
     companion object {
@@ -82,19 +103,43 @@ class LocationTrackingService : Service() {
     private lateinit var repository: LocationRepository
     private var locationJob: kotlinx.coroutines.Job? = null
     private var mqttConfigJob: kotlinx.coroutines.Job? = null
+    private lateinit var dmrTransport: DmrTransport
+    private lateinit var sequenceDataStore: DmrSequenceDataStore
+    private var settingsJob: Job? = null
+    private var dmrSchedulerJob: Job? = null
+    private var dmrSosRepeatJob: Job? = null
     private var mqttManager: MqttManager? = null
     private var mqttConfig: MqttConfig = MqttConfig()
     private var profile: PersonnelProfile? = null
     private lateinit var payloadBuilder: MqttPayloadBuilder
+    private var deliveryMode = DeliveryMode.INTERNET
+    private var dmrIntervalMs = DEFAULT_DMR_INTERVAL_MS
+    private var dmrSlot = DEFAULT_DMR_SLOT
     private var locationIntervalMs = DEFAULT_INTERVAL_MS
     private var heartRateJob: kotlinx.coroutines.Job? = null
     private var lastHeartRate = com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService.bpm.value
     private var lastHeartRatePublishAt = 0L
+    private var lastMqttPublishAt = 0L
+
+    private var lastDmrAttemptAt = 0L
+    private var lastDmrCycle = Long.MIN_VALUE
+    private var lastDmrSentLocation: LocationData? = null
+    private var dmrForceNextData = false
+    private var pendingDmrFrame: PendingDmrFrame? = null
+
+    private data class PendingDmrFrame(
+        val type: String,
+        val sequence: Long,
+        val payload: String,
+        val location: LocationData
+    )
 
     override fun onCreate() {
         super.onCreate()
         repository = LocationRepository(applicationContext)
         payloadBuilder = MqttPayloadBuilder(applicationContext)
+        dmrTransport = DmrTransport(applicationContext)
+        sequenceDataStore = DmrSequenceDataStore(applicationContext)
         createNotificationChannel()
         observeIncomingSos()
     }
@@ -131,9 +176,10 @@ class LocationTrackingService : Service() {
         if (locationJob?.isActive == true) return
         mqttManager = (application as DronePilotApplication).mqttManager
         observeIncomingSos()
-        observeMqttConfiguration()
+        observeSettings()
         startLocationUpdates(locationIntervalMs)
-        startHeartRateImmediatePublisher()
+        startHeartRatePublisher()
+        startDmrScheduler()
     }
 
     private fun startLocationUpdates(intervalMs: Long) {
@@ -143,45 +189,143 @@ class LocationTrackingService : Service() {
                 _locationUpdates.emit(result)
                 val currentLocation = result.getOrNull() ?: return@collect
                 _lastLocation.value = currentLocation
-                val currentProfile = profile ?: return@collect
-                val config = mqttConfig
-                if (!config.isComplete) return@collect
-                val interval = locationIntervalMs
-                val now = System.currentTimeMillis()
-                if (now - lastPublishAt < interval) return@collect
-                lastPublishAt = now
-                val (batteryLevel, charging) = batterySnapshot(applicationContext)
-                val payload = payloadBuilder.buildTrackingPayload(
-                    profile = currentProfile,
-                    location = currentLocation,
-                    batteryLevel = batteryLevel,
-                    charging = charging,
-                    serialNumber = config.serialNumber,
-                    id = config.id
-                )
-                mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
+                when (deliveryMode) {
+                    DeliveryMode.INTERNET -> publishInternetTracking(currentLocation)
+                    DeliveryMode.DMR -> Unit
+                }
             }
         }
     }
 
-    private var lastPublishAt = 0L
+    private suspend fun publishInternetTracking(location: LocationData) {
+        val currentProfile = profile ?: return
+        val config = mqttConfig
+        if (!config.isComplete) return
+        val interval = locationIntervalMs
+        val now = System.currentTimeMillis()
+        if (now - lastMqttPublishAt < interval) return
+        lastMqttPublishAt = now
+        val (batteryLevel, charging) = batterySnapshot(applicationContext)
+        val payload = payloadBuilder.buildTrackingPayload(
+            profile = currentProfile,
+            location = location,
+            batteryLevel = batteryLevel,
+            charging = charging,
+            serialNumber = config.serialNumber,
+            id = config.id
+        )
+        mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
+    }
 
-    private fun startHeartRateImmediatePublisher() {
+    private suspend fun handleDmrLocation(location: LocationData) {
+        if (_sosActive.value || !dmrTransport.readiness().isReady || mqttConfig.id.isBlank()) return
+
+        val pending = pendingDmrFrame
+        if (pending != null) {
+            trySendPendingDmr(pending)
+            return
+        }
+
+        if (!dmrForceNextData && !isDmrSlotDue()) return
+
+        createAndSendDmrFrame(type = "D", location = location)
+    }
+
+    private fun isDmrSlotDue(now: Long = System.currentTimeMillis()): Boolean {
+        val cycle = Math.floorDiv(now, DMR_CYCLE_MS)
+        if (cycle == lastDmrCycle) return false
+        val offset = Math.floorMod(now, DMR_CYCLE_MS)
+        val slotOffset = (dmrSlot - 1) * DMR_SLOT_SPACING_MS
+        return offset in slotOffset..(slotOffset + DMR_SLOT_GRACE_MS)
+    }
+
+    private suspend fun createAndSendDmrFrame(type: String, location: LocationData) {
+        val currentProfile = profile ?: return
+        val deviceId = mqttConfig.id.trim()
+        if (deviceId.isBlank()) return
+        val sequence = sequenceDataStore.nextSequence()
+        val (batteryLevel, _) = batterySnapshot(applicationContext)
+        val payload = if (type == "S") {
+            DmrPayloadFormatter.sos(
+                sequence = sequence,
+                id = deviceId,
+                profile = currentProfile,
+                location = location,
+                heartRate = BluetoothLeService.heartRateForPayload(),
+                batteryLevel = batteryLevel
+            )
+        } else {
+            DmrPayloadFormatter.data(
+                sequence = sequence,
+                id = deviceId,
+                profile = currentProfile,
+                location = location,
+                heartRate = BluetoothLeService.heartRateForPayload(),
+                batteryLevel = batteryLevel
+            )
+        }
+        val frame = PendingDmrFrame(type, sequence, payload, location)
+        pendingDmrFrame = frame
+        trySendPendingDmr(frame)
+    }
+
+    private suspend fun trySendPendingDmr(frame: PendingDmrFrame) {
+        if (pendingDmrFrame?.sequence != frame.sequence) return
+        val now = System.currentTimeMillis()
+        if (!isDmrSlotDue(now)) return
+        lastDmrAttemptAt = now
+        lastDmrCycle = Math.floorDiv(now, DMR_CYCLE_MS)
+        val result = dmrTransport.send(frame.payload)
+        if (result.isSuccess) {
+            pendingDmrFrame = null
+            lastDmrSentLocation = frame.location
+            dmrForceNextData = false
+        }
+    }
+
+    private fun startDmrScheduler() {
+        dmrSchedulerJob?.cancel()
+        dmrSchedulerJob = serviceScope.launch {
+            while (isActive) {
+                if (deliveryMode != DeliveryMode.DMR ||
+                    !dmrTransport.readiness().isReady ||
+                    mqttConfig.id.isBlank()
+                ) {
+                    delay(250L)
+                    continue
+                }
+
+                val pending = pendingDmrFrame
+                if (pending != null) {
+                    trySendPendingDmr(pending)
+                } else if (!_sosActive.value && isDmrSlotDue()) {
+                    lastLocation.value?.let { location ->
+                        createAndSendDmrFrame(type = "D", location = location)
+                    }
+                }
+                delay(100L)
+            }
+        }
+    }
+
+    private fun startHeartRatePublisher() {
         heartRateJob?.cancel()
         heartRateJob = serviceScope.launch {
-            com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService.bpm.collect { bpm ->
+            BluetoothLeService.bpm.collect { bpm ->
                 val previous = lastHeartRate
                 lastHeartRate = bpm
                 if (previous == bpm) return@collect
                 val now = System.currentTimeMillis()
                 if (now - lastHeartRatePublishAt < 250L) return@collect
                 lastHeartRatePublishAt = now
-                publishCurrentTracking()
+                if (deliveryMode == DeliveryMode.INTERNET) {
+                    publishCurrentInternetTracking()
+                }
             }
         }
     }
 
-    private fun publishCurrentTracking() {
+    private fun publishCurrentInternetTracking() {
         serviceScope.launch {
             val currentLocation = lastLocation.value ?: return@launch
             val currentProfile = profile ?: return@launch
@@ -197,14 +341,22 @@ class LocationTrackingService : Service() {
                 id = config.id
             )
             mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
+            publishInternetTracking(currentLocation)
         }
     }
 
     private fun sendSos() {
         _sosActive.value = true
+        dmrSosRepeatJob?.cancel()
         serviceScope.launch {
             val ready = withTimeoutOrNull(15_000L) {
-                while (profile == null || lastLocation.value == null || !mqttConfig.isComplete) {
+                while (
+                    profile == null ||
+                    lastLocation.value == null ||
+                    (deliveryMode == DeliveryMode.INTERNET && !mqttConfig.isComplete) ||
+                    (deliveryMode == DeliveryMode.DMR &&
+                        (!dmrTransport.readiness().isReady || mqttConfig.id.isBlank()))
+                ) {
                     delay(100L)
                 }
                 true
@@ -212,26 +364,73 @@ class LocationTrackingService : Service() {
 
             val currentProfile = profile
             val currentLocation = lastLocation.value
-            val config = mqttConfig
-            val result = if (!ready || currentProfile == null || currentLocation == null || !config.isComplete) {
-                Result.failure(IllegalStateException("SOS active, waiting for location or MQTT data"))
-            } else {
-                val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, serialNumber = config.serialNumber, id = config.id)
-                val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS) == true
-                if (published) Result.success(Unit)
-                else Result.failure(IllegalStateException("SOS queued or failed to publish; check MQTT status"))
+            val result: Result<Unit> = when {
+                !ready || currentProfile == null || currentLocation == null -> {
+                    Result.failure(IllegalStateException("SOS active, waiting for location or delivery readiness"))
+                }
+                deliveryMode == DeliveryMode.DMR -> {
+                    createAndSendDmrFrame(type = "S", location = currentLocation)
+                    startDmrSosRepeater()
+                    Result.success(Unit)
+                }
+                else -> {
+                    val config = mqttConfig
+                    if (!config.isComplete) {
+                        Result.failure(IllegalStateException("SOS active, waiting for location or MQTT data"))
+                    } else {
+                        val payload = payloadBuilder.buildSosPayload(
+                            currentProfile,
+                            currentLocation,
+                            serialNumber = config.serialNumber,
+                            id = config.id
+                        )
+                        val published = mqttManager?.publish(
+                            config.personelSosTopic,
+                            payload,
+                            MqttManager.QOS_SOS
+                        ) == true
+                        if (published) Result.success(Unit)
+                        else Result.failure(IllegalStateException("SOS queued or failed to publish; check MQTT status"))
+                    }
+                }
             }
             _sosResult.emit(result)
         }
     }
 
+    private fun startDmrSosRepeater() {
+        dmrSosRepeatJob?.cancel()
+        dmrSosRepeatJob = serviceScope.launch {
+            while (isActive && _sosActive.value && deliveryMode == DeliveryMode.DMR) {
+                delay(DMR_SOS_REPEAT_INTERVAL_MS)
+                if (!isActive || !_sosActive.value || deliveryMode != DeliveryMode.DMR) break
+                val location = lastLocation.value ?: continue
+                createAndSendDmrFrame(type = "S", location = location)
+            }
+        }
+    }
+
     private fun clearSos() {
-        // Matikan indikator lokal segera saat tombol CLEAR SOS ditekan sekali.
         _sosActive.value = false
+        dmrSosRepeatJob?.cancel()
+        dmrSosRepeatJob = null
+        dmrForceNextData = true
 
         serviceScope.launch {
             val currentProfile = profile
             val currentLocation = lastLocation.value
+            if (deliveryMode == DeliveryMode.DMR) {
+                if (mqttConfig.id.isBlank()) {
+                    _sosResult.emit(Result.failure(IllegalStateException("DMR Device Identity ID is required")))
+                    return@launch
+                }
+                if (currentProfile != null && currentLocation != null) {
+                    createAndSendDmrFrame(type = "D", location = currentLocation)
+                }
+                _sosResult.emit(Result.success(Unit))
+                return@launch
+            }
+
             val config = mqttConfig
             val result = when {
                 currentProfile == null -> Result.failure(IllegalStateException("SOS cleared locally; personnel profile is not ready"))
@@ -248,31 +447,70 @@ class LocationTrackingService : Service() {
         }
     }
 
-    private fun observeMqttConfiguration() {
-        mqttConfigJob?.cancel()
-        mqttConfigJob = serviceScope.launch {
+    private fun observeSettings() {
+        settingsJob?.cancel()
+        settingsJob = serviceScope.launch {
             launch {
                 ProfileDataStore(applicationContext).profile.collectLatest { profile = it }
             }
-            MqttConfigDataStore(applicationContext).config.collectLatest { config ->
-                val newInterval = config.intervalMs ?: DEFAULT_INTERVAL_MS
-                val intervalChanged = newInterval != locationIntervalMs
-                mqttConfig = config
-                if (intervalChanged && locationJob?.isActive == true) {
-                    locationIntervalMs = newInterval
-                    lastPublishAt = 0L
-                    startLocationUpdates(locationIntervalMs)
+
+            combine(
+                DeliverySettingsDataStore(applicationContext).mode,
+                MqttConfigDataStore(applicationContext).config,
+                DeliverySettingsDataStore(applicationContext).dmrIntervalMs,
+                DeliverySettingsDataStore(applicationContext).dmrSlot
+            ) { mode, config, dmrInterval, slot ->
+                DmrSettingsSnapshot(mode, config, dmrInterval, slot)
+            }.collectLatest { (mode, config, dmrInterval, slot) ->
+                val mqttInterval = config.intervalMs ?: DEFAULT_INTERVAL_MS
+                val effectiveInterval = if (mode == DeliveryMode.DMR) {
+                    dmrInterval.coerceAtLeast(DEFAULT_DMR_INTERVAL_MS)
                 } else {
-                    locationIntervalMs = newInterval
+                    mqttInterval
+                }
+                val intervalChanged = effectiveInterval != locationIntervalMs
+                deliveryMode = mode
+                mqttConfig = config
+                dmrIntervalMs = dmrInterval.coerceAtLeast(DEFAULT_DMR_INTERVAL_MS)
+                dmrSlot = slot
+                locationIntervalMs = effectiveInterval
+
+                if (intervalChanged && locationJob?.isActive == true) {
+                    lastMqttPublishAt = 0L
+                    startLocationUpdates(locationIntervalMs)
+                } else if (locationJob?.isActive != true) {
+                    startLocationUpdates(locationIntervalMs)
+                }
+
+                if (mode == DeliveryMode.DMR) {
+                    mqttManager?.disableAutoReconnect()
+                } else if (config.isComplete) {
+                    mqttManager?.connect(config)
                 }
             }
         }
+    }
+
+    private fun distanceMeters(a: LocationData, b: LocationData): Float {
+        val results = FloatArray(1)
+        android.location.Location.distanceBetween(
+            a.latitude,
+            a.longitude,
+            b.latitude,
+            b.longitude,
+            results
+        )
+        return results[0]
     }
 
     override fun onDestroy() {
         locationJob?.cancel()
         heartRateJob?.cancel()
         mqttConfigJob?.cancel()
+        dmrSchedulerJob?.cancel()
+        dmrSosRepeatJob?.cancel()
+        settingsJob?.cancel()
+        mqttManager?.disconnect()
         serviceScope.cancel()
         super.onDestroy()
     }

@@ -45,6 +45,7 @@ class MqttManager(context: Context) {
     private var retryJob: Job? = null
     private var retryCount = 0
     private var intentionallyStopped = false
+    private var autoReconnectEnabled = true
     private var activeConfig: MqttConfig? = null
     @Volatile private var connectingConfig: MqttConfig? = null
 
@@ -55,6 +56,7 @@ class MqttManager(context: Context) {
 
     @Synchronized
     fun connect(config: MqttConfig) {
+        autoReconnectEnabled = true
         if (!config.isComplete) {
             Log.e(TAG, "Connect rejected: MQTT configuration is incomplete")
             onStateChanged?.invoke(MqttManagerState.ERROR("MQTT configuration is incomplete"))
@@ -85,7 +87,13 @@ class MqttManager(context: Context) {
         onStateChanged?.invoke(MqttManagerState.DISCONNECTED)
     }
 
+    fun disableAutoReconnect() {
+        autoReconnectEnabled = false
+        disconnect()
+    }
+
     fun reconnect() {
+        if (!autoReconnectEnabled) return
         val config = activeConfig ?: return
         if (isConnected()) return
         connect(config)
@@ -221,7 +229,7 @@ class MqttManager(context: Context) {
                 onStateChanged?.invoke(MqttManagerState.ERROR(error?.message ?: "Broker rejected connection"))
                 scope.launch {
                     closeClient(newClient)
-                    if (!intentionallyStopped && generation.get() == currentGeneration) {
+                    if (!intentionallyStopped && autoReconnectEnabled && generation.get() == currentGeneration) {
                         scheduleRetry(config, currentGeneration)
                     }
                 }

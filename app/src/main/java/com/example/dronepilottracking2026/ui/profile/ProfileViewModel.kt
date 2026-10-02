@@ -55,6 +55,7 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val profile = PersonnelProfile(
+            id = _uiState.value.profile.id,
             name = name.trim(),
             nrp = nrp.trim(),
             avatarUri = avatarUri
