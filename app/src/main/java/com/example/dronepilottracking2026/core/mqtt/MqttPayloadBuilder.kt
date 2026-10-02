@@ -26,7 +26,8 @@ class MqttPayloadBuilder(private val context: Context) {
         batteryLevel: Int,
         charging: Boolean,
         serialNumber: String,
-        id: String
+        id: String,
+        includeAvatar: Boolean = false
     ): String {
         val now = System.currentTimeMillis()
         val heartRate = BluetoothLeService.heartRateForPayload()
@@ -70,7 +71,11 @@ class MqttPayloadBuilder(private val context: Context) {
             put("android_id", androidId())
             put("identity", JSONObject().apply {
                 put("id", id)
-                put("avatar", avatarBase64Cached(profile.avatarUri) ?: JSONObject.NULL)
+                put("avatar", if (includeAvatar) {
+                    avatarBase64Cached(profile.avatarUri) ?: JSONObject.NULL
+                } else {
+                    JSONObject.NULL
+                })
                 put("nrp", profile.nrp)
                 put("name", profile.name)
             })

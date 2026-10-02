@@ -4,7 +4,8 @@ data class PersonnelProfile(
     val id: String = "",
     val name: String = "",
     val nrp: String = "",
-    val avatarUri: String? = null
+    val avatarUri: String? = null,
+    val avatarSentUri: String? = null
 ) {
     val isComplete: Boolean
         get() = name.isNotBlank() && nrp.isNotBlank()
@@ -21,6 +22,7 @@ data class ProfileUiState(
     val profile: PersonnelProfile = PersonnelProfile(),
     val isEditing: Boolean = false,
     val isSaving: Boolean = false,
+    val isAvatarSending: Boolean = false,
     val error: String? = null,
     val notification: String? = null
 )

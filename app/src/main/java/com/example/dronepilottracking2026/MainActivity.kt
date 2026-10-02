@@ -3,6 +3,7 @@ package com.example.dronepilottracking2026
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -98,6 +99,9 @@ private fun DronePilotApp() {
             val showProfileForm = !profile.isComplete || profileUiState.isEditing
 
             if (showProfileForm) {
+                BackHandler(enabled = profile.isComplete && profileUiState.isEditing) {
+                    profileViewModel.cancelEditing()
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -110,7 +114,11 @@ private fun DronePilotApp() {
                         initialName = profile.name,
                         initialNrp = profile.nrp,
                         initialAvatarUri = profile.avatarUri,
+                        initialAvatarSentUri = profile.avatarSentUri,
                         isEditMode = profile.isComplete,
+                        isAvatarSending = profileUiState.isAvatarSending,
+                        onBack = profileViewModel::cancelEditing,
+                        onSendAvatar = profileViewModel::sendAvatar,
                         onSave = profileViewModel::save
                     )
                 }

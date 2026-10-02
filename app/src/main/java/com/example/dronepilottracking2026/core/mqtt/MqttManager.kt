@@ -51,6 +51,7 @@ class MqttManager(context: Context) {
 
     var onStateChanged: ((MqttManagerState) -> Unit)? = null
     var onPublishFailed: ((String, String) -> Unit)? = null
+    var onPublishSucceeded: ((String, String) -> Unit)? = null
     var onSosMessageReceived: ((topic: String, payload: String) -> Unit)? = null
     private var activeSosTopic: String? = null
 
@@ -144,9 +145,9 @@ class MqttManager(context: Context) {
 
     fun isConnected(): Boolean = client?.state?.isConnected == true
 
-    suspend fun publish(topic: String, payload: String, qos: Int = QOS_DATA): Boolean {
+    suspend fun publish(topic: String, payload: String, qos: Int = QOS_DATA, kind: String = "NORMAL"): Boolean {
         if (!isConnected()) {
-            queue.save(topic, payload, qos)
+            queue.save(topic, payload, qos, kind)
             Log.w(TAG, "Queued offline publish for topic=$topic")
             onPublishFailed?.invoke(topic, "Queued offline")
             return false
@@ -156,14 +157,16 @@ class MqttManager(context: Context) {
                 id = System.currentTimeMillis(),
                 topic = topic,
                 payload = payload,
-                qos = qos
+                qos = qos,
+                kind = kind
             )
         )
         if (!sent && !isConnected()) {
-            queue.save(topic, payload, qos)
+            queue.save(topic, payload, qos, kind)
             Log.w(TAG, "Connection dropped during publish; queued topic=$topic")
             onPublishFailed?.invoke(topic, "Queued offline")
         }
+        if (sent) onPublishSucceeded?.invoke(topic, kind)
         return sent
     }
 
@@ -239,7 +242,13 @@ class MqttManager(context: Context) {
                 Log.i(TAG, "MQTT connected; subscribing to SOS topic=${config.personelSosTopic}")
                 subscribeSosTopic(newClient, config.personelSosTopic)
                 onStateChanged?.invoke(MqttManagerState.CONNECTED)
-                scope.launch { queue.flush { publishNow(it) } }
+                scope.launch {
+                    queue.flush { message ->
+                        val sent = publishNow(message)
+                        if (sent) onPublishSucceeded?.invoke(message.topic, message.kind)
+                        sent
+                    }
+                }
             }
         }
     }
