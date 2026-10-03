@@ -6,6 +6,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +41,7 @@ import com.example.dronepilottracking2026.ui.theme.TacticalRed
 import com.example.dronepilottracking2026.ui.theme.TacticalText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import android.os.SystemClock
 
 @Composable
 fun GlobalSosStatusBar(
@@ -81,12 +84,12 @@ fun GlobalSosStatusBar(
             return@LaunchedEffect
         }
 
-        val startedAt = System.currentTimeMillis()
+        val startedAt = SystemClock.elapsedRealtime()
         while (isActive && holding && progress < 1f) {
             progress =
                 (
-                        (System.currentTimeMillis() - startedAt)
-                            .toFloat() / 3_000L
+                        (SystemClock.elapsedRealtime() - startedAt)
+                            .toFloat() / 2_000L
                         ).coerceIn(0f, 1f)
 
             if (
@@ -147,18 +150,30 @@ fun GlobalSosStatusBar(
         } else {
             Box(
                 modifier = Modifier
-                    .size(width = 86.dp, height = 34.dp)
+                    .size(width = 112.dp, height = 44.dp)
                     .background(TacticalCyan.copy(alpha = 0.14f), RoundedCornerShape(5.dp))
                     .pointerInput(Unit) {
-                        detectTapGestures(
-                            onPress = {
-                                triggered = false
-                                holding = true
-                                val released = tryAwaitRelease()
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+                            triggered = false
+                            holding = true
+                            try {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!change.pressed) {
+                                        change.consume()
+                                        break
+                                    }
+                                    // Keep the hold active through small finger drift outside the button.
+                                    change.consume()
+                                }
+                            } finally {
                                 holding = false
-                                if (!released || progress < 1f) progress = 0f
+                                if (!triggered) progress = 0f
                             }
-                        )
+                        }
                     },
                 contentAlignment = Alignment.Center
             ) {

@@ -6,6 +6,7 @@ import java.io.File
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.dronepilottracking2026.data.local.ProfileDataStore
+
 import com.example.dronepilottracking2026.data.model.PersonnelProfile
 import com.example.dronepilottracking2026.data.model.ProfileEvent
 import com.example.dronepilottracking2026.data.model.ProfileUiState
@@ -17,11 +18,13 @@ import com.example.dronepilottracking2026.DronePilotApplication
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class ProfileViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = ProfileRepository(ProfileDataStore(application.applicationContext))
+
 
     private val _loadState = MutableStateFlow<ProfileLoadState>(ProfileLoadState.Loading)
     val loadState: StateFlow<ProfileLoadState> = _loadState.asStateFlow()
@@ -39,11 +42,13 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         val manager = (application as DronePilotApplication).mqttManager
-        manager.onPublishFailed = { _, _ ->
-            _uiState.update { it.copy(isAvatarSending = false) }
-        }
-        manager.onPublishSucceeded = { _, kind ->
-            if (kind == "AVATAR") markAvatarSent()
+        viewModelScope.launch {
+            manager.publishEvents.collect { event ->
+                if (event.kind == "AVATAR") {
+                    if (event.success) markAvatarSent()
+                    else _uiState.update { it.copy(isAvatarSending = false) }
+                }
+            }
         }
     }
 
@@ -59,8 +64,8 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(notification = null) }
     }
 
-    fun save(name: String, nrp: String, avatarUri: String?) {
-        val validation = validateProfile(name, nrp)
+    fun save(id: String, name: String, nrp: String, avatarUri: String?) {
+        val validation = validateProfile(id, name, nrp)
         if (!validation.isValid) {
             _uiState.update { it.copy(error = validation.message) }
             return
@@ -68,6 +73,7 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
 
         val previousProfile = _uiState.value.profile
         val profile = PersonnelProfile(
+            id = id.trim(),
             name = name.trim(),
             nrp = nrp.trim(),
             avatarUri = avatarUri,
@@ -78,6 +84,7 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
             val wasEditing = _uiState.value.isEditing
             _uiState.update { it.copy(isSaving = true, error = null) }
             repository.save(profile)
+
             if (wasEditing && previousProfile.avatarUri != profile.avatarUri) {
                 val oldAvatar = previousProfile.avatarUri
                 if (oldAvatar != null && oldAvatar.startsWith("file:")) {
@@ -132,7 +139,7 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
 
     fun onEvent(event: ProfileEvent) {
         when (event) {
-            is ProfileEvent.Save -> save(event.name, event.nrp, event.avatarUri)
+            is ProfileEvent.Save -> save(event.id, event.name, event.nrp, event.avatarUri)
             ProfileEvent.StartEditing -> startEditing()
             ProfileEvent.CancelEditing -> _uiState.update { it.copy(isEditing = false, error = null) }
             ProfileEvent.ClearError -> _uiState.update { it.copy(error = null) }

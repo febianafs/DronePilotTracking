@@ -3,6 +3,8 @@ package com.example.dronepilottracking2026.ui.mqtt
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import com.example.dronepilottracking2026.DronePilotApplication
 import com.example.dronepilottracking2026.core.mqtt.MqttManager
 import com.example.dronepilottracking2026.core.mqtt.MqttManagerState
@@ -19,22 +21,38 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class MqttViewModel(application: Application) : AndroidViewModel(application) {
+    companion object { private const val TEST_RESULT_DISPLAY_MS = 4_000L }
     private val repository = MqttConfigRepository(MqttConfigDataStore(application.applicationContext))
     private val manager = (application as DronePilotApplication).mqttManager
     private val _uiState = MutableStateFlow(MqttUiState())
     val uiState: StateFlow<MqttUiState> = _uiState.asStateFlow()
+    private var testRequestId = 0L
+    private var testResultClearJob: Job? = null
 
     init {
-        manager.onStateChanged = { state ->
-            _uiState.update { it.copy(connectionState = state.toUiState(), error = state.errorMessage()) }
-        }
-        manager.onPublishFailed = { topic, reason ->
-            val message = if (reason == "Queued offline") {
-                "Message queued offline for topic: $topic"
-            } else {
-                "Publish failed for topic $topic: $reason"
+        viewModelScope.launch {
+            manager.connectionState.collect { state ->
+                _uiState.update { it.copy(connectionState = state.toUiState(), error = state.errorMessage()) }
             }
-            _uiState.update { it.copy(error = message) }
+        }
+        viewModelScope.launch {
+            manager.publishEvents.collect { event ->
+                if (event.success) {
+                    _uiState.update {
+                        it.copy(
+                            error = null,
+                            publishStatus = "MQTT broker accepted publish for ${event.topic}"
+                        )
+                    }
+                } else {
+                    val message = if (event.reason == "Queued offline") {
+                        "Message queued for retry on topic: ${event.topic}"
+                    } else {
+                        "Publish failed for topic ${event.topic}: ${event.reason.orEmpty()}"
+                    }
+                    _uiState.update { it.copy(error = message, publishStatus = message) }
+                }
+            }
         }
         viewModelScope.launch {
             repository.config.collectLatest { config ->
@@ -49,9 +67,9 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveSerialNumberAndId(serialNumber: String, id: String) {
+    fun saveSerialNumber(serialNumber: String) {
         viewModelScope.launch {
-            val updated = _uiState.value.config.copy(serialNumber = serialNumber, id = id)
+            val updated = _uiState.value.config.copy(serialNumber = serialNumber)
             repository.save(updated)
             _uiState.update { it.copy(config = updated) }
         }
@@ -77,8 +95,11 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun testConnection(config: MqttConfig) {
+        val requestId = ++testRequestId
+        testResultClearJob?.cancel()
         if (!config.isConnectionComplete) {
             _uiState.update { it.copy(testResult = "MQTT connection fields are incomplete") }
+            scheduleTestResultClear(requestId, "MQTT connection fields are incomplete")
             return
         }
         _uiState.update {
@@ -87,16 +108,30 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
         manager.testConnection(config) { result ->
             result.fold(
                 onSuccess = {
-                    _uiState.update {
-                        it.copy(testResult = "Connection test succeeded")
-                    }
+                    showTestResult(requestId, "Connection test succeeded")
                 },
-                onFailure = { error ->
-                    _uiState.update {
-                        it.copy(testResult = error.message ?: "MQTT test connection failed")
-                    }
+                onFailure = { _ ->
+                    showTestResult(requestId, "Connection test failed")
                 }
             )
+        }
+    }
+
+    private fun showTestResult(requestId: Long, result: String) {
+        viewModelScope.launch {
+            if (requestId != testRequestId) return@launch
+            _uiState.update { it.copy(testResult = result) }
+            scheduleTestResultClear(requestId, result)
+        }
+    }
+
+    private fun scheduleTestResultClear(requestId: Long, result: String) {
+        testResultClearJob?.cancel()
+        testResultClearJob = viewModelScope.launch {
+            delay(TEST_RESULT_DISPLAY_MS)
+            if (requestId == testRequestId && _uiState.value.testResult == result) {
+                _uiState.update { it.copy(testResult = null) }
+            }
         }
     }
 
@@ -104,7 +139,7 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
         MqttManagerState.CONNECTING -> MqttConnectionState.CONNECTING
         MqttManagerState.CONNECTED -> MqttConnectionState.CONNECTED
         MqttManagerState.DISCONNECTED -> MqttConnectionState.DISCONNECTED
-        is MqttManagerState.ERROR -> MqttConnectionState.ERROR
+        is MqttManagerState.ERROR -> MqttConnectionState.DISCONNECTED
     }
 
     private fun MqttManagerState.errorMessage(): String? =

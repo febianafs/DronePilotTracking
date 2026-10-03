@@ -47,6 +47,8 @@ class LocationTrackingService : Service() {
         private const val ACTION_CLEAR_SOS = "com.example.dronepilottracking2026.action.CLEAR_SOS"
         private const val ACTION_SEND_AVATAR = "com.example.dronepilottracking2026.action.SEND_AVATAR"
         private const val DEFAULT_INTERVAL_MS = 5_000L
+        private const val SOS_PREFS = "sos_state"
+        private const val SOS_ACTIVE_KEY = "active"
 
         private val _locationUpdates = MutableSharedFlow<Result<LocationData>>(
             replay = 1,
@@ -95,29 +97,37 @@ class LocationTrackingService : Service() {
     private lateinit var repository: LocationRepository
     private var locationJob: kotlinx.coroutines.Job? = null
     private var mqttConfigJob: kotlinx.coroutines.Job? = null
+    private var mqttSosJob: kotlinx.coroutines.Job? = null
     private var mqttManager: MqttManager? = null
     private var mqttConfig: MqttConfig = MqttConfig()
     private var profile: PersonnelProfile? = null
     private lateinit var payloadBuilder: MqttPayloadBuilder
     private var locationIntervalMs = DEFAULT_INTERVAL_MS
-    private var heartRateJob: kotlinx.coroutines.Job? = null
-    private var lastHeartRate = com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService.bpm.value
-    private var lastHeartRatePublishAt = 0L
 
     override fun onCreate() {
         super.onCreate()
+        _sosActive.value = getSharedPreferences(SOS_PREFS, MODE_PRIVATE).getBoolean(SOS_ACTIVE_KEY, false)
         repository = LocationRepository(applicationContext)
         payloadBuilder = MqttPayloadBuilder(applicationContext)
         createNotificationChannel()
         observeIncomingSos()
     }
 
+    private fun setSosActive(active: Boolean) {
+        _sosActive.value = active
+        getSharedPreferences(SOS_PREFS, MODE_PRIVATE).edit().putBoolean(SOS_ACTIVE_KEY, active).apply()
+    }
+
     private fun observeIncomingSos() {
-        mqttManager?.onSosMessageReceived = { _, payload ->
-            runCatching {
-                when (JSONObject(payload).optInt("sos", -1)) {
-                    1 -> _sosActive.value = true
-                    0 -> _sosActive.value = false
+        val manager = mqttManager ?: return
+        mqttSosJob?.cancel()
+        mqttSosJob = serviceScope.launch {
+            manager.sosMessages.collect { (_, payload) ->
+                runCatching {
+                    when (JSONObject(payload).optInt("sos", -1)) {
+                        1 -> setSosActive(true)
+                        0 -> setSosActive(false)
+                    }
                 }
             }
         }
@@ -150,7 +160,6 @@ class LocationTrackingService : Service() {
         observeIncomingSos()
         observeMqttConfiguration()
         startLocationUpdates(locationIntervalMs)
-        startHeartRateImmediatePublisher()
     }
 
     private fun startLocationUpdates(intervalMs: Long) {
@@ -174,48 +183,14 @@ class LocationTrackingService : Service() {
                     batteryLevel = batteryLevel,
                     charging = charging,
                     serialNumber = config.serialNumber,
-                    id = config.id
+                    id = currentProfile.id
                 )
-                mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
+                mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA, kind = "LOCATION")
             }
         }
     }
 
     private var lastPublishAt = 0L
-
-    private fun startHeartRateImmediatePublisher() {
-        heartRateJob?.cancel()
-        heartRateJob = serviceScope.launch {
-            com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService.bpm.collect { bpm ->
-                val previous = lastHeartRate
-                lastHeartRate = bpm
-                if (previous == bpm) return@collect
-                val now = System.currentTimeMillis()
-                if (now - lastHeartRatePublishAt < 250L) return@collect
-                lastHeartRatePublishAt = now
-                publishCurrentTracking()
-            }
-        }
-    }
-
-    private fun publishCurrentTracking() {
-        serviceScope.launch {
-            val currentLocation = lastLocation.value ?: return@launch
-            val currentProfile = profile ?: return@launch
-            val config = mqttConfig
-            if (!config.isComplete) return@launch
-            val (batteryLevel, charging) = batterySnapshot(applicationContext)
-            val payload = payloadBuilder.buildTrackingPayload(
-                profile = currentProfile,
-                location = currentLocation,
-                batteryLevel = batteryLevel,
-                charging = charging,
-                serialNumber = config.serialNumber,
-                id = config.id
-            )
-            mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
-        }
-    }
 
     private fun sendAvatar() {
         serviceScope.launch {
@@ -238,7 +213,7 @@ class LocationTrackingService : Service() {
                     batteryLevel = batteryLevel,
                     charging = charging,
                     serialNumber = config.serialNumber,
-                    id = config.id,
+                    id = currentProfile.id,
                     includeAvatar = true
                 )
                 if (mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA, kind = "AVATAR") == true) {
@@ -252,7 +227,7 @@ class LocationTrackingService : Service() {
     }
 
     private fun sendSos() {
-        _sosActive.value = true
+        setSosActive(true)
         serviceScope.launch {
             val ready = withTimeoutOrNull(15_000L) {
                 while (profile == null || lastLocation.value == null || !mqttConfig.isComplete) {
@@ -267,8 +242,8 @@ class LocationTrackingService : Service() {
             val result = if (!ready || currentProfile == null || currentLocation == null || !config.isComplete) {
                 Result.failure(IllegalStateException("SOS active, waiting for location or MQTT data"))
             } else {
-                val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, serialNumber = config.serialNumber, id = config.id)
-                val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS) == true
+                val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, serialNumber = config.serialNumber, id = currentProfile.id)
+                val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS, kind = "SOS") == true
                 if (published) Result.success(Unit)
                 else Result.failure(IllegalStateException("SOS queued or failed to publish; check MQTT status"))
             }
@@ -278,7 +253,7 @@ class LocationTrackingService : Service() {
 
     private fun clearSos() {
         // Matikan indikator lokal segera saat tombol CLEAR SOS ditekan sekali.
-        _sosActive.value = false
+        setSosActive(false)
 
         serviceScope.launch {
             val currentProfile = profile
@@ -289,8 +264,8 @@ class LocationTrackingService : Service() {
                 currentLocation == null -> Result.failure(IllegalStateException("SOS cleared locally; location is not available"))
                 !config.isComplete -> Result.failure(IllegalStateException("SOS cleared locally; MQTT configuration is incomplete"))
                 else -> {
-                    val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, sos = 0, serialNumber = config.serialNumber, id = config.id)
-                    val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS) == true
+                    val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, sos = 0, serialNumber = config.serialNumber, id = currentProfile.id)
+                    val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS, kind = "SOS_CLEAR") == true
                     if (published) Result.success(Unit)
                     else Result.failure(IllegalStateException("SOS clear queued or failed to publish; check MQTT status"))
                 }
@@ -301,6 +276,7 @@ class LocationTrackingService : Service() {
 
     private fun observeMqttConfiguration() {
         mqttConfigJob?.cancel()
+        mqttSosJob?.cancel()
         mqttConfigJob = serviceScope.launch {
             launch {
                 ProfileDataStore(applicationContext).profile.collectLatest { profile = it }
@@ -322,7 +298,6 @@ class LocationTrackingService : Service() {
 
     override fun onDestroy() {
         locationJob?.cancel()
-        heartRateJob?.cancel()
         mqttConfigJob?.cancel()
         serviceScope.cancel()
         super.onDestroy()

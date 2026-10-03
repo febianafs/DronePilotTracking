@@ -28,6 +28,7 @@ class MqttReconnectManager(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var watchdogJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var activeNetwork: Network? = null
     private var reconnectGuardJob: Job? = null
     @Volatile private var isReconnecting = false
     @Volatile private var started = false
@@ -51,10 +52,6 @@ class MqttReconnectManager(
     private fun registerNetworkCallback() {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE)
             as ConnectivityManager
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val capabilities = connectivityManager.getNetworkCapabilities(network)
@@ -67,9 +64,11 @@ class MqttReconnectManager(
                     return
                 }
 
-                if (!mqttManager.isConnected()) {
-                    Log.d(TAG, "Validated network available; MQTT disconnected")
-                    reconnectNow("network available")
+                val changed = activeNetwork != null && activeNetwork != network
+                activeNetwork = network
+                if (changed || !mqttManager.isConnected()) {
+                    Log.d(TAG, "Validated default network available; MQTT reconnect needed")
+                    reconnectNow(if (changed) "default network changed" else "network available", force = changed)
                 } else {
                     Log.d(TAG, "Validated network available; MQTT already connected")
                 }
@@ -77,11 +76,12 @@ class MqttReconnectManager(
 
             override fun onLost(network: Network) {
                 Log.d(TAG, "Network lost")
+                if (activeNetwork == network) activeNetwork = null
             }
         }
 
         try {
-            connectivityManager.registerNetworkCallback(request, networkCallback!!)
+            connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
         } catch (error: Exception) {
             Log.e(TAG, "Unable to register network callback", error)
         }
@@ -111,14 +111,14 @@ class MqttReconnectManager(
         }
     }
 
-    private fun reconnectNow(reason: String) {
+    private fun reconnectNow(reason: String, force: Boolean = false) {
         if (isReconnecting || !started) return
         isReconnecting = true
         Log.d(TAG, "Reconnect triggered: $reason")
 
         scope.launch {
             try {
-                mqttManager.reconnect()
+                mqttManager.reconnect(force)
             } catch (error: Exception) {
                 Log.e(TAG, "Reconnect failed: ${error.message}", error)
             } finally {

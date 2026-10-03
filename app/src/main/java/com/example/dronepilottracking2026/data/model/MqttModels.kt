@@ -7,8 +7,8 @@ data class MqttConfig(
     val username: String = "",
     val password: String = "",
     val serialNumber: String = "",
-    val id: String = "",
     val useWebSocket: Boolean = false,
+    val useTls: Boolean = true,
     val personelDataTopic: String = "",
     val personelSosTopic: String = "",
     val intervalMs: Long? = 5_000L
@@ -94,5 +94,6 @@ data class MqttUiState(
     val connectionState: MqttConnectionState = MqttConnectionState.NOT_CONFIGURED,
     val error: String? = null,
     val saved: Boolean = false,
-    val testResult: String? = null
+    val testResult: String? = null,
+    val publishStatus: String? = null
 )

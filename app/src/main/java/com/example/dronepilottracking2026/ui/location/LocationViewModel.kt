@@ -18,6 +18,11 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import android.Manifest
+import android.os.Build
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 
 class LocationViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LocationRepository(application.applicationContext)
@@ -26,6 +31,7 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
     private var locationJob: Job? = null
     private var serviceLocationJob: Job? = null
     private var sosJob: Job? = null
+    private var staleLocationJob: Job? = null
     private var lastAccepted: LocationData? = null
     private val _sosFeedback = MutableStateFlow<String?>(null)
     val sosFeedback: StateFlow<String?> = _sosFeedback.asStateFlow()
@@ -65,6 +71,7 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
         serviceLocationJob?.cancel()
         lastAccepted = null
         LocationTrackingService.start(getApplication<Application>())
+        refreshBackgroundPermission()
         _uiState.update {
             it.copy(status = LocationStatus.SEARCHING, error = null, trackingServiceActive = true)
         }
@@ -80,12 +87,21 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
                 )
             }
         }
+        staleLocationJob?.cancel()
+        staleLocationJob = viewModelScope.launch {
+            while (true) {
+                delay(5_000L)
+                refreshStaleState()
+            }
+        }
     }
 
     fun stopBackgroundTracking() {
         LocationTrackingService.stop(getApplication<Application>())
         serviceLocationJob?.cancel()
         serviceLocationJob = null
+        staleLocationJob?.cancel()
+        staleLocationJob = null
         _uiState.update { it.copy(status = LocationStatus.UNAVAILABLE, trackingServiceActive = false) }
     }
 
@@ -117,6 +133,12 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
     fun refreshStaleState(now: Long = System.currentTimeMillis()) {
         val location = _uiState.value.location ?: return
         if (location.isStale(now)) _uiState.update { it.copy(status = LocationStatus.STALE) }
+    }
+
+    fun refreshBackgroundPermission() {
+        val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+        _uiState.update { it.copy(backgroundLocationGranted = granted) }
     }
 
     private fun acceptLocation(candidate: LocationData) {
@@ -161,6 +183,7 @@ class LocationViewModel(application: Application) : AndroidViewModel(application
     override fun onCleared() {
         locationJob?.cancel()
         serviceLocationJob?.cancel()
+        staleLocationJob?.cancel()
         super.onCleared()
     }
 }

@@ -15,6 +15,7 @@ private val Context.profileDataStore by preferencesDataStore(name = "personnel_p
 class ProfileDataStore(private val context: Context) {
     private object Keys {
         val profileCompleted = booleanPreferencesKey("profile_completed")
+        val id = stringPreferencesKey("id")
         val name = stringPreferencesKey("name")
         val nrp = stringPreferencesKey("nrp")
         val avatarUri = stringPreferencesKey("avatar_uri")
@@ -26,6 +27,7 @@ class ProfileDataStore(private val context: Context) {
             null
         } else {
             PersonnelProfile(
+                id = preferences[Keys.id].orEmpty(),
                 name = preferences[Keys.name].orEmpty(),
                 nrp = preferences[Keys.nrp].orEmpty(),
                 avatarUri = preferences[Keys.avatarUri],
@@ -37,6 +39,7 @@ class ProfileDataStore(private val context: Context) {
     suspend fun save(profile: PersonnelProfile) {
         context.profileDataStore.edit { preferences ->
             preferences[Keys.profileCompleted] = profile.isComplete
+            preferences[Keys.id] = profile.id
             preferences[Keys.name] = profile.name
             preferences[Keys.nrp] = profile.nrp
             if (profile.avatarUri == null) {

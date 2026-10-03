@@ -51,6 +51,7 @@ import com.example.dronepilottracking2026.ui.location.LocationViewModel
 
 @Composable
 fun TrackingStatusScreen(
+    id: String,
     name: String,
     nrp: String,
     avatarUri: String? = null,
@@ -69,6 +70,7 @@ fun TrackingStatusScreen(
         ScreenHeader()
 
         ProfileIdentityCard(
+            id = id,
             name = name,
             nrp = nrp,
             avatarUri = avatarUri,
@@ -106,6 +108,7 @@ private fun ScreenHeader() {
 
 @Composable
 private fun ProfileIdentityCard(
+    id: String,
     name: String,
     nrp: String,
     avatarUri: String?,
@@ -193,6 +196,12 @@ private fun ProfileIdentityCard(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
+                    text = "ID   $id",
+                    color = TacticalMuted,
+                    fontSize = 13.sp,
+                    letterSpacing = 0.8.sp
+                )
+                Text(
                     text = "NRP  $nrp",
                     color = TacticalMuted,
                     fontSize = 13.sp,
@@ -231,6 +240,7 @@ private fun initialsOf(name: String): String {
 private fun TrackingStatusScreenPreview() {
     DronePilotTracking2026Theme(dynamicColor = false, darkTheme = true) {
         TrackingStatusScreen(
+            id = "001",
             name = "Febi",
             nrp = "123456",
             avatarUri = null,
