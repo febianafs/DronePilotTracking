@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,10 +46,20 @@ class DmrTransport(context: Context) {
     }
 
     fun isNotificationAccessGranted(): Boolean = runCatching {
-        val manager = appContext.getSystemService(NotificationManager::class.java)
-        manager?.isNotificationListenerAccessGranted(
-            ComponentName(appContext, DmrNotificationListener::class.java)
-        ) == true
+        val component = ComponentName(appContext, DmrNotificationListener::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            val manager = appContext.getSystemService(NotificationManager::class.java)
+            manager?.isNotificationListenerAccessGranted(component) == true
+        } else {
+            val enabledListeners = Settings.Secure.getString(
+                appContext.contentResolver,
+                "enabled_notification_listeners"
+            ).orEmpty()
+            enabledListeners.split(":").any { value ->
+                runCatching { ComponentName.unflattenFromString(value) == component }
+                    .getOrDefault(false)
+            }
+        }
     }.getOrDefault(false)
 
     fun openNotificationAccessSettings(): Boolean = runCatching {
