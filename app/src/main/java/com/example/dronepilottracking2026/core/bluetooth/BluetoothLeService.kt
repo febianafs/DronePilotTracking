@@ -77,7 +77,6 @@ class BluetoothLeService : Service() {
     private val heartRateStaleRunnable = Runnable {
         if (connectionState.value == BleConnectionState.CONNECTED) {
             Log.w(TAG, "Heart rate notifications stale; clearing BPM")
-            lastContactLostRawBpm = null
             publishBpm(0)
         }
     }
@@ -248,7 +247,6 @@ class BluetoothLeService : Service() {
             } else {
                 result.bpm
             }
-            if (effectiveBpm > 0) lastContactLostRawBpm = null
             handler.removeCallbacks(heartRateStaleRunnable)
             if (effectiveBpm > 0) handler.postDelayed(heartRateStaleRunnable, HEART_RATE_STALE_TIMEOUT_MS)
             publishBpm(effectiveBpm)

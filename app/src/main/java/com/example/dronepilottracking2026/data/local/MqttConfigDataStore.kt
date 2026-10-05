@@ -23,6 +23,7 @@ class MqttConfigDataStore(private val context: Context) {
         val username = stringPreferencesKey("username")
         val password = stringPreferencesKey("password")
         val serialNumber = stringPreferencesKey("serial_number")
+        val id = stringPreferencesKey("id")
 
         val useWebSocket = booleanPreferencesKey("use_websocket")
         val useTls = booleanPreferencesKey("use_tls")
@@ -44,6 +45,7 @@ class MqttConfigDataStore(private val context: Context) {
             username = preferences[Keys.username].orEmpty(),
             password = runCatching { AppCrypto.decryptOrLegacy(preferences[Keys.password].orEmpty()) }.getOrDefault(""),
             serialNumber = preferences[Keys.serialNumber].orEmpty(),
+            id = preferences[Keys.id].orEmpty(),
 
             useWebSocket = useWebSocket,
             useTls = useTls,
@@ -71,6 +73,7 @@ class MqttConfigDataStore(private val context: Context) {
             preferences[Keys.username] = config.username
             preferences[Keys.password] = AppCrypto.encrypt(config.password)
             preferences[Keys.serialNumber] = config.serialNumber
+            preferences[Keys.id] = config.id
 
             preferences[Keys.useWebSocket] = config.useWebSocket
             preferences[Keys.useTls] = config.useTls

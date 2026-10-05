@@ -7,6 +7,7 @@ data class MqttConfig(
     val username: String = "",
     val password: String = "",
     val serialNumber: String = "",
+    val id: String = "",
     val useWebSocket: Boolean = false,
     val useTls: Boolean = true,
     val personelDataTopic: String = "",

@@ -228,21 +228,21 @@ class LocationTrackingService : Service() {
     }
 
     private suspend fun publishInternetTracking(location: LocationData) {
-        val currentProfile = profile ?: return@collect
+        val currentProfile = profile ?: return
         val config = mqttConfig
-        if (!config.isComplete) return@collect
+        if (!config.isComplete) return
         val interval = locationIntervalMs
         val now = System.currentTimeMillis()
-        if (now - lastPublishAt < interval) return@collect
-        lastPublishAt = now
+        if (now - lastMqttPublishAt < interval) return
+        lastMqttPublishAt = now
         val (batteryLevel, charging) = batterySnapshot(applicationContext)
         val payload = payloadBuilder.buildTrackingPayload(
             profile = currentProfile,
-            location = currentLocation,
+            location = location,
             batteryLevel = batteryLevel,
             charging = charging,
             serialNumber = config.serialNumber,
-            id = currentProfile.id
+            id = config.id
         )
         mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA, kind = "LOCATION")
     }
@@ -515,10 +515,6 @@ class LocationTrackingService : Service() {
         }
     }
 
-    private fun observeMqttConfiguration() {
-        mqttConfigJob?.cancel()
-        mqttSosJob?.cancel()
-        mqttConfigJob = serviceScope.launch {
     private fun observeSettings() {
         settingsJob?.cancel()
         settingsJob = serviceScope.launch {

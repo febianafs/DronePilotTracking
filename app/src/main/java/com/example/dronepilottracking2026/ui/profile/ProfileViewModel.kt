@@ -72,7 +72,7 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
 
         val previousProfile = _uiState.value.profile
         val profile = PersonnelProfile(
-            id = _uiState.value.profile.id,
+            id = id.trim(),
             name = name.trim(),
             nrp = nrp.trim(),
             avatarUri = avatarUri,

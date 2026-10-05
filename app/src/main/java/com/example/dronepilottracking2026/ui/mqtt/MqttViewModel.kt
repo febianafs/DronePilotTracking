@@ -36,7 +36,6 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
     private val configRepository = MqttConfigRepository(MqttConfigDataStore(application.applicationContext))
     private val deliverySettings = DeliverySettingsDataStore(application.applicationContext)
     companion object { private const val TEST_RESULT_DISPLAY_MS = 4_000L }
-    private val repository = MqttConfigRepository(MqttConfigDataStore(application.applicationContext))
     private val manager = (application as DronePilotApplication).mqttManager
     private val dmrTransport = DmrTransport(application.applicationContext)
     private val _uiState = MutableStateFlow(MqttUiState())
@@ -162,7 +161,18 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
     fun saveSerialNumber(serialNumber: String) {
         viewModelScope.launch {
             val updated = _uiState.value.config.copy(serialNumber = serialNumber)
-            repository.save(updated)
+            configRepository.save(updated)
+            _uiState.update { it.copy(config = updated) }
+        }
+    }
+
+    fun saveSerialNumberAndId(serialNumber: String, id: String) {
+        viewModelScope.launch {
+            val updated = _uiState.value.config.copy(
+                serialNumber = serialNumber,
+                id = id
+            )
+            configRepository.save(updated)
             _uiState.update { it.copy(config = updated) }
         }
     }
