@@ -20,14 +20,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 
 class BluetoothViewModel(application: Application) : AndroidViewModel(application) {
+    companion object { private const val SCAN_TIMEOUT_MS = 15_000L }
     private val bluetoothManager = application.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter: BluetoothAdapter? = bluetoothManager.adapter
     private val scanner get() = adapter?.bluetoothLeScanner
     private val _uiState = MutableStateFlow(HeartRateUiState())
     val uiState: StateFlow<HeartRateUiState> = _uiState.asStateFlow()
     private var scanCallback: ScanCallback? = null
+    private var scanTimeoutJob: Job? = null
     init {
         refreshBluetoothState()
         observeServiceState()
@@ -67,9 +71,18 @@ class BluetoothViewModel(application: Application) : AndroidViewModel(applicatio
             override fun onScanFailed(errorCode: Int) = setError("BLE scan failed: $errorCode")
         }
         try { bluetoothScanner.startScan(scanCallback) } catch (_: SecurityException) { setError("Bluetooth permission is required") }
+        if (scanCallback != null) {
+            scanTimeoutJob?.cancel()
+            scanTimeoutJob = viewModelScope.launch {
+                delay(SCAN_TIMEOUT_MS)
+                if (_uiState.value.isScanning) stopScan()
+            }
+        }
     }
 
     fun stopScan() {
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = null
         val callback = scanCallback ?: return
         try { if (hasBluetoothPermission()) scanner?.stopScan(callback) } catch (_: SecurityException) { }
         scanCallback = null

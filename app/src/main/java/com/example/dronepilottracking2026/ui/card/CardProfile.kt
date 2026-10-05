@@ -78,17 +78,20 @@ import com.example.dronepilottracking2026.ui.theme.TacticalText
 fun CardProfile(
     modifier: Modifier = Modifier,
     initialName: String = "",
+    initialId: String = "",
     initialNrp: String = "",
     initialAvatarUri: String? = null,
     initialAvatarSentUri: String? = null,
     isEditMode: Boolean = false,
+    showSendAvatar: Boolean = isEditMode,
     isAvatarSending: Boolean = false,
     onBack: () -> Unit = {},
     onSendAvatar: () -> Unit = {},
-    onSave: (name: String, nrp: String, avatarUri: String?) -> Unit = { _, _, _ -> }
+    onSave: (id: String, name: String, nrp: String, avatarUri: String?) -> Unit = { _, _, _, _ -> }
 ) {
     val context = LocalContext.current
     var name by remember(initialName) { mutableStateOf(initialName) }
+    var id by remember(initialId) { mutableStateOf(initialId) }
     var nrp by remember(initialNrp) { mutableStateOf(initialNrp) }
     var avatarUri by remember(initialAvatarUri) { mutableStateOf(initialAvatarUri) }
     var avatarRefreshKey by remember { mutableStateOf(0) }
@@ -187,8 +190,9 @@ fun CardProfile(
             }
         }
 
-    val isFormValid = name.isNotBlank() && nrp.isNotBlank()
+    val isFormValid = id.isNotBlank() && name.isNotBlank() && nrp.isNotBlank()
     val hasChanges = !isEditMode ||
+        id.trim() != initialId.trim() ||
         name.trim() != initialName.trim() ||
         nrp.trim() != initialNrp.trim() ||
         avatarUri != initialAvatarUri
@@ -272,9 +276,19 @@ fun CardProfile(
             )
 
             TacticalTextField(
+                value = id,
+                onValueChange = { id = it },
+                label = "ID *",
+                placeholder = "Masukkan ID",
+                leadingIcon = {
+                    Text(text = "ID", color = TacticalCyan, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                }
+            )
+
+            TacticalTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = "FULL NAME",
+                label = "FULL NAME *",
                 placeholder = "Masukkan nama lengkap",
                 leadingIcon = {
                     Text(text = "P", color = TacticalCyan, fontWeight = FontWeight.Bold)
@@ -284,7 +298,7 @@ fun CardProfile(
             TacticalTextField(
                 value = nrp,
                 onValueChange = { nrp = it },
-                label = "NRP / PERSONNEL ID",
+                label = "NRP / PERSONNEL ID *",
                 placeholder = "Masukkan nomor registrasi",
                 keyboardType = KeyboardType.Number,
                 leadingIcon = {
@@ -297,10 +311,10 @@ fun CardProfile(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Button(
-                    onClick = { onSave(name.trim(), nrp.trim(), avatarUri) },
+                    onClick = { onSave(id.trim(), name.trim(), nrp.trim(), avatarUri) },
                     enabled = isFormValid && hasChanges && !avatarLoading,
                     modifier = Modifier
-                        .weight(1f)
+                        .then(if (showSendAvatar) Modifier.weight(1f) else Modifier.fillMaxWidth())
                         .height(52.dp)
                         .shadow(
                             elevation = 10.dp,
@@ -329,11 +343,9 @@ fun CardProfile(
                     )
                 }
 
-                Button(
+                if (showSendAvatar) Button(
                     onClick = onSendAvatar,
-                    enabled = isEditMode &&
-                        !isAvatarSending &&
-                        !initialAvatarUri.isNullOrBlank(),
+                    enabled = !isAvatarSending && !initialAvatarUri.isNullOrBlank(),
                     modifier = Modifier
                         .weight(1f)
                         .height(52.dp),
@@ -512,13 +524,23 @@ private fun TacticalTextField(
     keyboardType: KeyboardType = KeyboardType.Text
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text(
-            text = label,
-            color = TacticalMuted,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label.removeSuffix(" *"),
+                color = TacticalMuted,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+            if (label.endsWith(" *")) {
+                Text(
+                    text = " *",
+                    color = com.example.dronepilottracking2026.ui.theme.TacticalRed,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,

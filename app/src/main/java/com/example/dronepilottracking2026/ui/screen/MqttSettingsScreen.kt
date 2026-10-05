@@ -3,6 +3,7 @@ package com.example.dronepilottracking2026.ui.screen
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -52,6 +54,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -83,6 +89,10 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
     var serialNumber by remember(savedConfig.serialNumber) { mutableStateOf(savedConfig.serialNumber) }
     var id by remember(savedConfig.id) { mutableStateOf(savedConfig.id) }
     var useWebSocket by remember(savedConfig.useWebSocket) { mutableStateOf(savedConfig.useWebSocket) }
+    // Keep the edited TLS choice while the saved config flow emits after Save.
+    var useTls by remember(savedConfig.host, savedConfig.tcpPort, savedConfig.wsPort, savedConfig.useWebSocket) {
+        mutableStateOf(savedConfig.useTls)
+    }
     var personelDataTopic by remember(savedConfig.personelDataTopic) { mutableStateOf(savedConfig.personelDataTopic) }
     var personelSosTopic by remember(savedConfig.personelSosTopic) { mutableStateOf(savedConfig.personelSosTopic) }
     var interval by remember(savedConfig.intervalMs) { mutableStateOf(savedConfig.intervalMs?.toIntervalLabel().orEmpty()) }
@@ -127,6 +137,7 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
             serialNumber = serialNumber.trim(),
             id = id.trim(),
             useWebSocket = useWebSocket,
+            useTls = useTls,
             personelDataTopic = personelDataTopic.trim(),
             personelSosTopic = personelSosTopic.trim(),
             intervalMs = interval.toIntervalMs()
@@ -226,6 +237,14 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
                 onUseWebSocketChange = { useWebSocket = it }
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                androidx.compose.material3.Checkbox(checked = useTls, onCheckedChange = { useTls = it })
+                Text("Use encrypted TLS connection (recommended)", color = TacticalText, fontSize = 12.sp)
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 TacticalField(
                     value = tcpPort,
@@ -292,16 +311,11 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
                 label = "SERIAL NUMBER",
                 placeholder = "Device serial number"
             )
-            TacticalField(
-                value = id,
-                onValueChange = { id = it },
-                label = "ID",
-                placeholder = "Device ID"
-            )
+
         }
 
         Button(
-            onClick = { viewModel?.saveSerialNumberAndId(serialNumber.trim(), id.trim()) },
+            onClick = { viewModel?.saveSerialNumber(serialNumber.trim()) },
             enabled = serialNumber.isNotBlank(),
             modifier = Modifier
                 .fillMaxWidth()
@@ -313,7 +327,7 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
             )
         ) {
             Text(
-                text = "SAVE SERIAL NUMBER & ID",
+                text = "SAVE SERIAL NUMBER",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.7.sp
@@ -373,15 +387,7 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
             )
         }
 
-        if (mqttState.error != null) {
-            Text(
-                text = mqttState.error.orEmpty(),
-                modifier = Modifier.fillMaxWidth(),
-                color = com.example.dronepilottracking2026.ui.theme.TacticalRed,
-                fontSize = 10.sp,
-                letterSpacing = 0.5.sp
-            )
-        } else if (mqttState.saved) {
+        if (mqttState.saved) {
             Text(
                 text = "CONFIGURATION SAVED  •  CONNECTING...",
                 modifier = Modifier.fillMaxWidth(),
@@ -901,13 +907,13 @@ private fun TacticalField(
             },
             trailingIcon = if (isPassword) {
                 {
-                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                        Text(
-                            text = if (passwordVisible) "◉" else "◌",
-                            color = TacticalCyan,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                    IconButton(
+                        onClick = { passwordVisible = !passwordVisible },
+                        modifier = Modifier.semantics {
+                            contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                        }
+                    ) {
+                        PasswordEyeIcon(visible = passwordVisible)
                     }
                 }
             } else {
@@ -924,6 +930,33 @@ private fun TacticalField(
                 cursorColor = TacticalAmber
             )
         )
+    }
+}
+
+@Composable
+private fun PasswordEyeIcon(visible: Boolean) {
+    Canvas(modifier = Modifier.size(22.dp)) {
+        val iconSize = size.height
+        val eye = Path().apply {
+            moveTo(iconSize * 0.08f, iconSize * 0.5f)
+            cubicTo(iconSize * 0.28f, iconSize * 0.18f, iconSize * 0.72f, iconSize * 0.18f, iconSize * 0.92f, iconSize * 0.5f)
+            cubicTo(iconSize * 0.72f, iconSize * 0.82f, iconSize * 0.28f, iconSize * 0.82f, iconSize * 0.08f, iconSize * 0.5f)
+        }
+        val strokeWidth = 1.8.dp.toPx()
+        drawPath(eye, TacticalCyan, style = Stroke(width = strokeWidth))
+        drawCircle(
+            color = TacticalCyan,
+            radius = iconSize * 0.12f,
+            center = androidx.compose.ui.geometry.Offset(iconSize * 0.5f, iconSize * 0.5f)
+        )
+        if (!visible) {
+            drawLine(
+                color = TacticalCyan,
+                start = androidx.compose.ui.geometry.Offset(iconSize * 0.16f, iconSize * 0.84f),
+                end = androidx.compose.ui.geometry.Offset(iconSize * 0.84f, iconSize * 0.16f),
+                strokeWidth = strokeWidth
+            )
+        }
     }
 }
 

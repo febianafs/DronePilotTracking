@@ -4,7 +4,10 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.dronepilottracking2026.core.security.AppCrypto
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,22 +23,28 @@ data class MqttQueueEntity(
 
 class MqttQueueManager(private val context: Context) {
     private val key = stringPreferencesKey("messages")
+    private val mutex = Mutex()
 
     suspend fun save(topic: String, payload: String, qos: Int, kind: String = "NORMAL") {
-        context.mqttQueueDataStore.edit { preferences ->
-            val messages = parseQueue(preferences[key].orEmpty())
-            messages.put(JSONObject().apply {
-                put("id", System.currentTimeMillis())
-                put("topic", topic)
-                put("payload", payload)
-                put("qos", qos)
-                put("kind", kind)
-            })
-            preferences[key] = messages.toString()
-        }
+        mutex.withLock { context.mqttQueueDataStore.edit { preferences ->
+            val messages = parseQueue(runCatching { AppCrypto.decryptOrLegacy(preferences[key].orEmpty()) }.getOrDefault(""))
+            val existing = readEntities(messages)
+            // Tracking is state: retain only the newest location. SOS is also state,
+            // so an offline clear supersedes an older pending activation (and vice versa).
+            val retained = when (kind) {
+                "NORMAL", "LOCATION" -> existing.filterNot { it.topic == topic && it.kind in setOf("NORMAL", "LOCATION") }
+                "SOS", "SOS_CLEAR" -> existing.filterNot { it.topic == topic && it.kind in setOf("SOS", "SOS_CLEAR") }
+                else -> existing
+            }
+            val updated = (retained + MqttQueueEntity(System.currentTimeMillis(), topic, payload, qos, kind))
+                .takeLast(MAX_QUEUE_SIZE)
+                .sortedBy { if (it.kind == "SOS" || it.kind == "SOS_CLEAR") 0 else 1 }
+            preferences[key] = AppCrypto.encrypt(toJson(updated).toString())
+        } }
     }
 
     suspend fun flush(publish: suspend (MqttQueueEntity) -> Boolean) {
+        mutex.withLock {
         val current = readMessages().toMutableList()
         val remaining = mutableListOf<MqttQueueEntity>()
         for (message in current) {
@@ -45,25 +54,19 @@ class MqttQueueManager(private val context: Context) {
                 break
             }
         }
-        context.mqttQueueDataStore.edit { preferences ->
-            preferences[key] = JSONArray().apply {
-                remaining.forEach { message ->
-                    put(JSONObject().apply {
-                        put("id", message.id)
-                        put("topic", message.topic)
-                        put("payload", message.payload)
-                        put("qos", message.qos)
-                        put("kind", message.kind)
-                    })
-                }
-            }.toString()
+        context.mqttQueueDataStore.edit { preferences -> preferences[key] = AppCrypto.encrypt(toJson(remaining).toString()) }
         }
     }
 
     private suspend fun readMessages(): List<MqttQueueEntity> {
-        val raw = context.mqttQueueDataStore.data.first()[key].orEmpty()
+        val raw = runCatching { AppCrypto.decryptOrLegacy(context.mqttQueueDataStore.data.first()[key].orEmpty()) }
+            .getOrDefault("")
         val json = parseQueue(raw)
-        return (0 until json.length()).mapNotNull { index ->
+        return readEntities(json)
+    }
+
+    private fun readEntities(json: JSONArray): List<MqttQueueEntity> =
+        (0 until json.length()).mapNotNull { index ->
             runCatching {
                 val item = json.getJSONObject(index)
                 MqttQueueEntity(
@@ -75,7 +78,15 @@ class MqttQueueManager(private val context: Context) {
                 )
             }.getOrNull()
         }
+
+    private fun toJson(messages: List<MqttQueueEntity>) = JSONArray().apply {
+        messages.forEach { message -> put(JSONObject().apply {
+            put("id", message.id); put("topic", message.topic); put("payload", message.payload)
+            put("qos", message.qos); put("kind", message.kind)
+        }) }
     }
+
+    private companion object { const val MAX_QUEUE_SIZE = 500 }
 
     private fun parseQueue(raw: String): JSONArray {
         if (raw.isBlank()) return JSONArray()

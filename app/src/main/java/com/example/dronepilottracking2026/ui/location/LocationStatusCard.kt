@@ -26,6 +26,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +38,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.dronepilottracking2026.data.model.LocationStatus
 import com.example.dronepilottracking2026.data.model.LocationUiState
 import com.example.dronepilottracking2026.data.model.DeliveryMode
@@ -61,6 +65,7 @@ fun LocationStatusCard(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val foregroundPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -68,7 +73,7 @@ fun LocationStatusCard(
     }
     val backgroundPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { }
+    ) { viewModel.refreshBackgroundPermission() }
 
     LaunchedEffect(deliveryMode, dmrReady) {
         if (deliveryMode == DeliveryMode.DMR && !dmrReady) {
@@ -87,6 +92,18 @@ fun LocationStatusCard(
         }
     }
 
+    androidx.compose.runtime.LaunchedEffect(state.trackingServiceActive) {
+        if (state.trackingServiceActive) viewModel.refreshBackgroundPermission()
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshBackgroundPermission()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     LocationStatusCardContent(
         state = state,
         deliveryMode = deliveryMode,
@@ -95,7 +112,11 @@ fun LocationStatusCard(
         modifier = modifier,
         onEnableBackground = {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                backgroundPermissionLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    context.startActivity(applicationDetailsIntent(context))
+                } else {
+                    backgroundPermissionLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                }
             } else {
                 context.startActivity(applicationDetailsIntent(context))
             }
@@ -167,20 +188,28 @@ private fun LocationStatusCardContent(
         }
 
         if (state.trackingServiceActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            Text(
-                "Continuous tracking is active. Background permission keeps tracking available when the app is not visible.",
-                color = TacticalMuted,
-                fontSize = 10.sp
-            )
-            Button(
-                onClick = onEnableBackground,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = TacticalCardElevated,
-                    contentColor = TacticalCyan
-                ),
-                shape = RoundedCornerShape(6.dp)
-            ) {
-                Text("ENABLE BACKGROUND LOCATION", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            if (state.backgroundLocationGranted) {
+                Text(
+                    "Continuous tracking is active. Background location permission is enabled.",
+                    color = TacticalMuted,
+                    fontSize = 10.sp
+                )
+            } else {
+                Text(
+                    "Tracking remains active while the app is visible. Grant background location permission to support tracking when the app is not visible.",
+                    color = TacticalMuted,
+                    fontSize = 10.sp
+                )
+                Button(
+                    onClick = onEnableBackground,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = TacticalCardElevated,
+                        contentColor = TacticalCyan
+                    ),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text("ENABLE BACKGROUND LOCATION", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }

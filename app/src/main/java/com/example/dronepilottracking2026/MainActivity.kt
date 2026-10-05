@@ -34,6 +34,8 @@ import com.example.dronepilottracking2026.ui.card.CardProfile
 import com.example.dronepilottracking2026.ui.navigation.AppBottomNavigation
 import com.example.dronepilottracking2026.ui.navigation.AppDestination
 import com.example.dronepilottracking2026.ui.profile.ProfileViewModel
+import com.example.dronepilottracking2026.ui.profile.ProfileSetupCard
+import com.example.dronepilottracking2026.ui.profile.ProfileEditCard
 import com.example.dronepilottracking2026.ui.location.LocationViewModel
 import com.example.dronepilottracking2026.ui.mqtt.MqttViewModel
 import com.example.dronepilottracking2026.ui.screen.HeartRateScreen
@@ -110,17 +112,27 @@ private fun DronePilotApp() {
                         .verticalScroll(rememberScrollState())
                         .padding(16.dp)
                 ) {
-                    CardProfile(
-                        initialName = profile.name,
-                        initialNrp = profile.nrp,
-                        initialAvatarUri = profile.avatarUri,
-                        initialAvatarSentUri = profile.avatarSentUri,
-                        isEditMode = profile.isComplete,
-                        isAvatarSending = profileUiState.isAvatarSending,
-                        onBack = profileViewModel::cancelEditing,
-                        onSendAvatar = profileViewModel::sendAvatar,
-                        onSave = profileViewModel::save
-                    )
+                    if (profile.isComplete) {
+                        ProfileEditCard(
+                            initialId = profile.id,
+                            initialName = profile.name,
+                            initialNrp = profile.nrp,
+                            initialAvatarUri = profile.avatarUri,
+                            initialAvatarSentUri = profile.avatarSentUri,
+                            isAvatarSending = profileUiState.isAvatarSending,
+                            onBack = profileViewModel::cancelEditing,
+                            onSendAvatar = profileViewModel::sendAvatar,
+                            onSave = profileViewModel::save
+                        )
+                    } else {
+                        ProfileSetupCard(
+                            initialId = profile.id,
+                            initialName = profile.name,
+                            initialNrp = profile.nrp,
+                            initialAvatarUri = profile.avatarUri,
+                            onSave = profileViewModel::save
+                        )
+                    }
                 }
             } else {
                 Column(
@@ -138,6 +150,7 @@ private fun DronePilotApp() {
                         Box(modifier = Modifier.weight(1f)) {
                             when (currentDestination) {
                             AppDestination.HOME -> TrackingStatusScreen(
+                                id = profile.id,
                                 name = profile.name,
                                 nrp = profile.nrp,
                                 avatarUri = profile.avatarUri,

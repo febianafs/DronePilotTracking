@@ -15,6 +15,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
@@ -22,6 +26,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 class MqttManager(context: Context) {
@@ -33,6 +38,7 @@ class MqttManager(context: Context) {
         private const val MAX_RETRY_DELAY_MS = 300_000L
         private const val TEST_TIMEOUT_MS = 15_000L
         private const val CLOSE_TIMEOUT_MS = 5_000L
+        private const val PUBLISH_TIMEOUT_MS = 10_000L
     }
 
     private val appContext = context.applicationContext
@@ -49,10 +55,12 @@ class MqttManager(context: Context) {
     private var activeConfig: MqttConfig? = null
     @Volatile private var connectingConfig: MqttConfig? = null
 
-    var onStateChanged: ((MqttManagerState) -> Unit)? = null
-    var onPublishFailed: ((String, String) -> Unit)? = null
-    var onPublishSucceeded: ((String, String) -> Unit)? = null
-    var onSosMessageReceived: ((topic: String, payload: String) -> Unit)? = null
+    private val _connectionState = MutableStateFlow<MqttManagerState>(MqttManagerState.DISCONNECTED)
+    val connectionState = _connectionState.asStateFlow()
+    private val _publishEvents = MutableSharedFlow<MqttPublishEvent>(extraBufferCapacity = 128)
+    val publishEvents = _publishEvents.asSharedFlow()
+    private val _sosMessages = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 32)
+    val sosMessages = _sosMessages.asSharedFlow()
     private var activeSosTopic: String? = null
 
     @Synchronized
@@ -60,7 +68,7 @@ class MqttManager(context: Context) {
         autoReconnectEnabled = true
         if (!config.isComplete) {
             Log.e(TAG, "Connect rejected: MQTT configuration is incomplete")
-            onStateChanged?.invoke(MqttManagerState.ERROR("MQTT configuration is incomplete"))
+            setState(MqttManagerState.ERROR("MQTT configuration is incomplete"))
             return
         }
         if (activeConfig == config && (isConnected() || connectingConfig == config)) {
@@ -72,7 +80,7 @@ class MqttManager(context: Context) {
         intentionallyStopped = false
         retryCount = 0
         val currentGeneration = generation.incrementAndGet()
-        onStateChanged?.invoke(MqttManagerState.CONNECTING)
+        setState(MqttManagerState.CONNECTING)
         scope.launch { doConnect(config, currentGeneration) }
     }
 
@@ -85,7 +93,7 @@ class MqttManager(context: Context) {
         client = null
         activeSosTopic = null
         scope.launch { oldClient?.let { closeClient(it) } }
-        onStateChanged?.invoke(MqttManagerState.DISCONNECTED)
+        setState(MqttManagerState.DISCONNECTED)
     }
 
     fun disableAutoReconnect() {
@@ -93,10 +101,16 @@ class MqttManager(context: Context) {
         disconnect()
     }
 
-    fun reconnect() {
+    fun reconnect(force: Boolean = false) {
         if (!autoReconnectEnabled) return
         val config = activeConfig ?: return
-        if (isConnected()) return
+        if (isConnected() && !force) return
+        if (force) {
+            connectingConfig = null
+            client?.let { old -> scope.launch { closeClient(old) } }
+            client = null
+            activeSosTopic = null
+        }
         connect(config)
     }
 
@@ -125,6 +139,7 @@ class MqttManager(context: Context) {
                 if (config.useWebSocket) {
                     builder.webSocketConfig().serverPath("/").applyWebSocketConfig()
                 }
+                if (config.useTls) builder.sslWithDefaultConfig()
                 builder.simpleAuth()
                     .username(config.username)
                     .password(config.password.toByteArray(StandardCharsets.UTF_8))
@@ -149,7 +164,7 @@ class MqttManager(context: Context) {
         if (!isConnected()) {
             queue.save(topic, payload, qos, kind)
             Log.w(TAG, "Queued offline publish for topic=$topic")
-            onPublishFailed?.invoke(topic, "Queued offline")
+            emitPublish(MqttPublishEvent(topic, kind, false, "Queued offline"))
             return false
         }
         val sent = publishNow(
@@ -161,12 +176,12 @@ class MqttManager(context: Context) {
                 kind = kind
             )
         )
-        if (!sent && !isConnected()) {
+        if (!sent) {
             queue.save(topic, payload, qos, kind)
-            Log.w(TAG, "Connection dropped during publish; queued topic=$topic")
-            onPublishFailed?.invoke(topic, "Queued offline")
+            Log.w(TAG, "Publish failed; queued topic=$topic")
+            emitPublish(MqttPublishEvent(topic, kind, false, "Queued offline"))
         }
-        if (sent) onPublishSucceeded?.invoke(topic, kind)
+        if (sent) emitPublish(MqttPublishEvent(topic, kind, true))
         return sent
     }
 
@@ -178,9 +193,7 @@ class MqttManager(context: Context) {
             if (generation.get() == currentGeneration && !intentionallyStopped) {
                 connectingConfig = null
                 Log.e(TAG, "Unable to start MQTT connection", error)
-                onStateChanged?.invoke(
-                    MqttManagerState.ERROR(error.message ?: "Unable to create MQTT connection")
-                )
+                setState(MqttManagerState.ERROR(error.message ?: "Unable to create MQTT connection"))
                 scheduleRetry(config, currentGeneration)
             }
         }
@@ -199,7 +212,7 @@ class MqttManager(context: Context) {
         val port = if (config.useWebSocket) config.wsPort else config.tcpPort
         if (port == null || port !in 1..65535) {
             connectingConfig = null
-            onStateChanged?.invoke(MqttManagerState.ERROR("MQTT port is invalid"))
+            setState(MqttManagerState.ERROR("MQTT port is invalid"))
             return
         }
         Log.i(TAG, "Connecting to MQTT host=${config.host}, port=$port, websocket=${config.useWebSocket}")
@@ -214,6 +227,7 @@ class MqttManager(context: Context) {
         if (config.useWebSocket) {
             builder.webSocketConfig().serverPath("/").applyWebSocketConfig()
         }
+        if (config.useTls) builder.sslWithDefaultConfig()
         builder.simpleAuth()
             .username(config.username)
             .password(config.password.toByteArray(StandardCharsets.UTF_8))
@@ -229,7 +243,7 @@ class MqttManager(context: Context) {
             if (error != null || ack?.returnCode != Mqtt3ConnAckReturnCode.SUCCESS) {
                 connectingConfig = null
                 Log.e(TAG, "MQTT connection failed: ${error?.message ?: ack?.returnCode}")
-                onStateChanged?.invoke(MqttManagerState.ERROR(error?.message ?: "Broker rejected connection"))
+                setState(MqttManagerState.ERROR(error?.message ?: "Broker rejected connection"))
                 scope.launch {
                     closeClient(newClient)
                     if (!intentionallyStopped && autoReconnectEnabled && generation.get() == currentGeneration) {
@@ -241,11 +255,11 @@ class MqttManager(context: Context) {
                 retryCount = 0
                 Log.i(TAG, "MQTT connected; subscribing to SOS topic=${config.personelSosTopic}")
                 subscribeSosTopic(newClient, config.personelSosTopic)
-                onStateChanged?.invoke(MqttManagerState.CONNECTED)
+                setState(MqttManagerState.CONNECTED)
                 scope.launch {
                     queue.flush { message ->
                         val sent = publishNow(message)
-                        if (sent) onPublishSucceeded?.invoke(message.topic, message.kind)
+                        if (sent) emitPublish(MqttPublishEvent(message.topic, message.kind, true))
                         sent
                     }
                 }
@@ -293,17 +307,15 @@ class MqttManager(context: Context) {
             .callback { publish: Mqtt3Publish ->
                 if (publish.isRetain) return@callback
                 val payload = String(publish.payloadAsBytes, StandardCharsets.UTF_8)
-                onSosMessageReceived?.invoke(normalizedTopic, payload)
+                _sosMessages.tryEmit(normalizedTopic to payload)
             }
             .send()
             .whenComplete { _, error ->
                 if (error == null) {
                     activeSosTopic = normalizedTopic
                 } else {
-                    onPublishFailed?.invoke(
-                        normalizedTopic,
-                        "SOS subscription failed: ${error.message}"
-                    )
+                    emitPublish(MqttPublishEvent(normalizedTopic, "SUBSCRIPTION", false,
+                        "SOS subscription failed: ${error.message}"))
                 }
             }
     }
@@ -320,12 +332,12 @@ class MqttManager(context: Context) {
                 ?.payload(message.payload.toByteArray(StandardCharsets.UTF_8))
                 ?.retain(false)
                 ?.send()
-                ?.get()
+            ?.get(PUBLISH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             Log.d(TAG, "Published MQTT message to topic=${message.topic}")
             true
         } catch (error: Exception) {
             Log.e(TAG, "Publish failed for topic=${message.topic}: ${error.message}", error)
-            onPublishFailed?.invoke(message.topic, error.message ?: "Publish failed")
+            emitPublish(MqttPublishEvent(message.topic, message.kind, false, error.message ?: "Publish failed"))
             false
         }
     }
@@ -343,7 +355,17 @@ class MqttManager(context: Context) {
             }
         }
     }
+
+    private fun setState(state: MqttManagerState) { _connectionState.value = state }
+    private fun emitPublish(event: MqttPublishEvent) { _publishEvents.tryEmit(event) }
 }
+
+data class MqttPublishEvent(
+    val topic: String,
+    val kind: String,
+    val success: Boolean,
+    val reason: String? = null
+)
 
 sealed interface MqttManagerState {
     data object CONNECTING : MqttManagerState

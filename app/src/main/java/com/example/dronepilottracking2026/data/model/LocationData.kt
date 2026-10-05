@@ -37,6 +37,7 @@ data class LocationUiState(
     val gpsStrength: Int = 0,
     val isMoving: Boolean = false,
     val trackingServiceActive: Boolean = false,
+    val backgroundLocationGranted: Boolean = false,
     val error: String? = null
 )
 

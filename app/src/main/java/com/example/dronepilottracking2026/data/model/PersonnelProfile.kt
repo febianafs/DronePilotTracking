@@ -8,7 +8,7 @@ data class PersonnelProfile(
     val avatarSentUri: String? = null
 ) {
     val isComplete: Boolean
-        get() = name.isNotBlank() && nrp.isNotBlank()
+        get() = id.isNotBlank() && name.isNotBlank() && nrp.isNotBlank()
 }
 
 fun PersonnelProfile?.orEmpty(): PersonnelProfile = this ?: PersonnelProfile()
@@ -29,6 +29,7 @@ data class ProfileUiState(
 
 sealed interface ProfileEvent {
     data class Save(
+        val id: String,
         val name: String,
         val nrp: String,
         val avatarUri: String?
@@ -44,11 +45,13 @@ data class ProfileValidationResult(
     val message: String? = null
 )
 
-fun validateProfile(name: String, nrp: String): ProfileValidationResult {
+fun validateProfile(id: String, name: String, nrp: String): ProfileValidationResult {
+    val normalizedId = id.trim()
     val normalizedName = name.trim()
     val normalizedNrp = nrp.trim()
 
     return when {
+        normalizedId.isBlank() -> ProfileValidationResult(false, "ID wajib diisi")
         normalizedName.isBlank() -> ProfileValidationResult(false, "Nama wajib diisi")
         normalizedNrp.isBlank() -> ProfileValidationResult(false, "NRP wajib diisi")
         normalizedNrp.any { !it.isDigit() } -> ProfileValidationResult(false, "NRP hanya boleh berisi angka")

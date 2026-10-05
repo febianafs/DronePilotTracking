@@ -43,6 +43,7 @@ class BluetoothLeService : Service() {
         private const val KEY_NAME = "device_name"
         private const val KEY_ADDRESS = "device_address"
         private const val RECONNECT_DELAY_MS = 5_000L
+        private const val HEART_RATE_STALE_TIMEOUT_MS = 10_000L
 
         val connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
         val bpm = MutableStateFlow(0)
@@ -73,6 +74,13 @@ class BluetoothLeService : Service() {
 
     private val binder = LocalBinder()
     private val handler = Handler(Looper.getMainLooper())
+    private val heartRateStaleRunnable = Runnable {
+        if (connectionState.value == BleConnectionState.CONNECTED) {
+            Log.w(TAG, "Heart rate notifications stale; clearing BPM")
+            lastContactLostRawBpm = null
+            publishBpm(0)
+        }
+    }
     private var bluetoothGatt: BluetoothGatt? = null
     private var currentAddress: String? = null
     private var userRequestedDisconnect = false
@@ -105,6 +113,7 @@ class BluetoothLeService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(reconnectRunnable)
+        handler.removeCallbacks(heartRateStaleRunnable)
         disconnectGatt()
         if (currentInstance === this) currentInstance = null
         super.onDestroy()
@@ -155,6 +164,7 @@ class BluetoothLeService : Service() {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     try {
+                        connectionState.value = BleConnectionState.CONNECTING
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         gatt.discoverServices()
                     } catch (e: SecurityException) {
@@ -163,6 +173,7 @@ class BluetoothLeService : Service() {
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    handler.removeCallbacks(heartRateStaleRunnable)
                     try {
                         if (hasConnectPermission()) gatt.close()
                     } catch (e: SecurityException) {
@@ -184,23 +195,44 @@ class BluetoothLeService : Service() {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) return
-            connectionState.value = BleConnectionState.CONNECTED
-            connectedDevice.value = connectedDevice.value?.copy(state = DeviceState.CONNECTED)
-            updateNotification("Connected to ${connectedDevice.value?.name ?: "device"}")
+            if (gatt.device.address != currentAddress) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e(TAG, "GATT service discovery failed: $status")
+                failGattSetup(gatt)
+                return
+            }
 
-            val service = gatt.getService(HEART_RATE_SERVICE) ?: return
-            val characteristic = service.getCharacteristic(HEART_RATE_CHARACTERISTIC) ?: return
-            if (!hasConnectPermission()) return
+            val service = gatt.getService(HEART_RATE_SERVICE) ?: return failGattSetup(gatt)
+            val characteristic = service.getCharacteristic(HEART_RATE_CHARACTERISTIC) ?: return failGattSetup(gatt)
+            if (characteristic.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE) == 0) {
+                return failGattSetup(gatt)
+            }
+            if (!hasConnectPermission()) return failGattSetup(gatt)
             try {
-                gatt.setCharacteristicNotification(characteristic, true)
-                characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)?.let { descriptor ->
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
-                }
+                if (!gatt.setCharacteristicNotification(characteristic, true)) return failGattSetup(gatt)
+                val descriptor = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
+                    ?: return failGattSetup(gatt)
+                descriptor.value = if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0 &&
+                    characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY == 0) {
+                    BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                } else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                if (!gatt.writeDescriptor(descriptor)) failGattSetup(gatt)
             } catch (e: SecurityException) {
                 Log.e(TAG, "Unable to subscribe to heart rate notifications", e)
+                failGattSetup(gatt)
             }
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (gatt.device.address != currentAddress || descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e(TAG, "Heart rate notification subscription failed: $status")
+                failGattSetup(gatt)
+                return
+            }
+            connectionState.value = BleConnectionState.CONNECTED
+            connectedDevice.value = lockedDevice.value?.copy(state = DeviceState.CONNECTED)
+            updateNotification("Connected to ${connectedDevice.value?.name ?: "device"}")
         }
 
         override fun onCharacteristicChanged(
@@ -216,7 +248,23 @@ class BluetoothLeService : Service() {
             } else {
                 result.bpm
             }
+            if (effectiveBpm > 0) lastContactLostRawBpm = null
+            handler.removeCallbacks(heartRateStaleRunnable)
+            if (effectiveBpm > 0) handler.postDelayed(heartRateStaleRunnable, HEART_RATE_STALE_TIMEOUT_MS)
             publishBpm(effectiveBpm)
+        }
+    }
+
+    private fun failGattSetup(gatt: BluetoothGatt) {
+        if (gatt.device.address != currentAddress) return
+        connectionState.value = BleConnectionState.DISCONNECTED
+        connectedDevice.value = lockedDevice.value
+        handler.removeCallbacks(heartRateStaleRunnable)
+        publishBpm(0)
+        try {
+            if (hasConnectPermission()) gatt.disconnect()
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Unable to disconnect after GATT setup failure", error)
         }
     }
 
@@ -227,6 +275,7 @@ class BluetoothLeService : Service() {
         } catch (e: SecurityException) {
             Log.e(TAG, "GATT disconnect permission denied", e)
         } finally {
+            handler.removeCallbacks(heartRateStaleRunnable)
             bluetoothGatt = null
         }
     }

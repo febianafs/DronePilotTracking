@@ -14,6 +14,7 @@ import com.example.dronepilottracking2026.data.model.PersonnelProfile
 import com.example.dronepilottracking2026.data.model.LocationData
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
 import android.util.Base64
 
 class MqttPayloadBuilder(private val context: Context) {
@@ -138,41 +139,37 @@ class MqttPayloadBuilder(private val context: Context) {
     private fun avatarBase64(uri: String?): String? {
         if (uri.isNullOrBlank()) return null
         return runCatching {
-            val resolver = context.contentResolver
             val parsedUri = android.net.Uri.parse(uri)
+            val path = parsedUri.path
+            val localFile = path?.let(::File)
+
+            if (parsedUri.scheme == "file" && localFile != null && localFile.extension.equals("jpg", ignoreCase = true)) {
+                val optimizedBytes = localFile.readBytes()
+                if (optimizedBytes.isNotEmpty()) {
+                    return@runCatching Base64.encodeToString(optimizedBytes, Base64.NO_WRAP)
+                }
+            }
+
+            val resolver = context.contentResolver
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             resolver.openInputStream(parsedUri)?.use {
                 BitmapFactory.decodeStream(it, null, bounds)
             }
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-
-            val targetSize = 384
-            var sample = 1
-            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= targetSize) {
-                sample *= 2
-            }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
 
             val options = BitmapFactory.Options().apply {
-                inSampleSize = sample
+                inSampleSize = 1
                 inPreferredConfig = Bitmap.Config.RGB_565
             }
             val bitmap = resolver.openInputStream(parsedUri)?.use {
                 BitmapFactory.decodeStream(it, null, options)
-            } ?: return null
+            } ?: return@runCatching null
 
             try {
-                var quality = 60
-                var compressed: ByteArray
-                do {
-                    compressed = ByteArrayOutputStream().use { output ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
-                        output.toByteArray()
-                    }
-                    if (compressed.size <= 60 * 1024 || quality <= 35) break
-                    quality -= 5
-                } while (quality >= 35)
-
-                Base64.encodeToString(compressed, Base64.NO_WRAP)
+                ByteArrayOutputStream().use { output ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 60, output)
+                    Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                }
             } finally {
                 bitmap.recycle()
             }
