@@ -38,9 +38,11 @@ class CoreBehaviorTest {
     }
 
     @Test
-    fun profileValidationAcceptsLettersNumbersAndSpacesWithLengthLimits() {
+    fun profileValidationRejectsIdSpacesButAllowsThemInNameAndNrp() {
         assertTrue(validateProfile("001", "Pilot", "12345").isValid)
-        assertTrue(validateProfile("A 01", "Pilot 2", "12A 45").isValid)
+        assertTrue(validateProfile("A01", "Pilot 2", "12A 45").isValid)
+        assertFalse(validateProfile("A 01", "Pilot", "12345").isValid)
+        assertFalse(validateProfile("A01 ", "Pilot", "12345").isValid)
         assertFalse(validateProfile("ID!", "Pilot", "12A45").isValid)
         assertFalse(validateProfile("001", "Pilot".repeat(30), "12A45").isValid)
     }

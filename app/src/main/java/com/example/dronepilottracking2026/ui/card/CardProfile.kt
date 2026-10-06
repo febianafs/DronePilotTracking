@@ -196,7 +196,7 @@ fun CardProfile(
         }
 
     val isFormValid = id.isNotBlank() && name.isNotBlank() && nrp.isNotBlank() &&
-        listOf(id, name, nrp).all(::isProfileTextAllowed)
+        listOf(id, name, nrp).all(::isProfileTextAllowed) && id.none { it.isWhitespace() }
     val hasChanges = !isEditMode ||
         id.trim() != initialId.trim() ||
         name.trim() != initialName.trim() ||
@@ -291,6 +291,13 @@ fun CardProfile(
                     Text(text = "ID", color = TacticalCyan, fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
             )
+            if (id.any { it.isWhitespace() }) {
+                Text(
+                    text = "ID must not contain spaces.",
+                    color = com.example.dronepilottracking2026.ui.theme.TacticalRed,
+                    fontSize = 10.sp
+                )
+            }
 
             TacticalTextField(
                 value = name,

@@ -27,7 +27,6 @@ class MqttPayloadBuilder(private val context: Context) {
         batteryLevel: Int,
         charging: Boolean,
         serialNumber: String,
-        id: String,
         includeAvatar: Boolean = false
     ): String {
         val now = System.currentTimeMillis()
@@ -77,7 +76,7 @@ class MqttPayloadBuilder(private val context: Context) {
             put("serial_number", serialNumber)
             put("android_id", androidId())
             put("identity", JSONObject().apply {
-                put("id", id)
+                put("id", profile.id)
                 // Keep avatar out of regular tracking packets so they do not clear
                 // the server's stored avatar after the one-time upload.
                 if (includeAvatar) put("avatar", avatarBase64)

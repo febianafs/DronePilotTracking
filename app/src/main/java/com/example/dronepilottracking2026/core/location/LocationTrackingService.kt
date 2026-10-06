@@ -242,8 +242,7 @@ class LocationTrackingService : Service() {
             location = location,
             batteryLevel = batteryLevel,
             charging = charging,
-            serialNumber = config.serialNumber,
-            id = config.id
+            serialNumber = config.serialNumber
         )
         mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA, kind = "LOCATION")
     }
@@ -386,7 +385,6 @@ class LocationTrackingService : Service() {
                         batteryLevel = batteryLevel,
                         charging = charging,
                         serialNumber = config.serialNumber,
-                        id = currentProfile.id,
                         includeAvatar = true
                     )
                     if (mqttManager?.publish(

@@ -64,6 +64,7 @@ fun validateProfile(id: String, name: String, nrp: String): ProfileValidationRes
         normalizedId.length > MAX_PROFILE_ID_LENGTH -> ProfileValidationResult(false, "ID maksimal $MAX_PROFILE_ID_LENGTH karakter")
         normalizedName.length > MAX_PROFILE_NAME_LENGTH -> ProfileValidationResult(false, "Nama maksimal $MAX_PROFILE_NAME_LENGTH karakter")
         normalizedNrp.length > MAX_PROFILE_NRP_LENGTH -> ProfileValidationResult(false, "NRP maksimal $MAX_PROFILE_NRP_LENGTH karakter")
+        id.any { it.isWhitespace() } -> ProfileValidationResult(false, "ID tidak boleh mengandung spasi")
         !isProfileTextAllowed(normalizedId) || !isProfileTextAllowed(normalizedName) || !isProfileTextAllowed(normalizedNrp) ->
             ProfileValidationResult(false, "ID, nama, dan NRP hanya boleh berisi huruf, angka, dan spasi")
         else -> ProfileValidationResult(true)
