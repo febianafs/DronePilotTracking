@@ -181,15 +181,14 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
                     label = "SERIAL NUMBER",
                     placeholder = "Optional device serial number"
                 )
-                TacticalField(
-                    value = id,
-                    onValueChange = { id = it },
-                    label = "ID",
-                    placeholder = "Required for DMR payload"
+                Text(
+                    text = "DMR uses the ID saved in your personnel profile.",
+                    color = TacticalMuted,
+                    fontSize = 11.sp
                 )
                 Button(
-                    onClick = { viewModel?.saveSerialNumberAndId(serialNumber.trim(), id.trim()) },
-                    enabled = id.isNotBlank(),
+                    onClick = { viewModel?.saveSerialNumber(serialNumber.trim()) },
+                    enabled = serialNumber.trim() != mqttState.config.serialNumber,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(46.dp),
@@ -200,7 +199,7 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
                     )
                 ) {
                     Text(
-                        text = "SAVE SERIAL NUMBER & ID",
+                        text = "SAVE SERIAL NUMBER",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.7.sp

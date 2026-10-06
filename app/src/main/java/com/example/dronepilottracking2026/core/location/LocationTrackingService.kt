@@ -248,7 +248,7 @@ class LocationTrackingService : Service() {
     }
 
     private suspend fun handleDmrLocation(location: LocationData) {
-        if (_sosActive.value || !dmrTransport.readiness().isReady || mqttConfig.id.isBlank()) return
+        if (_sosActive.value || !dmrTransport.readiness().isReady || profile?.id.isNullOrBlank()) return
 
         val pending = pendingDmrFrame
         if (pending != null) {
@@ -271,7 +271,7 @@ class LocationTrackingService : Service() {
 
     private suspend fun createAndSendDmrFrame(type: String, location: LocationData) {
         val currentProfile = profile ?: return
-        val deviceId = mqttConfig.id.trim()
+        val deviceId = currentProfile.id.trim()
         if (deviceId.isBlank()) return
         val sequence = sequenceDataStore.nextSequence()
         val (batteryLevel, _) = batterySnapshot(applicationContext)
@@ -319,7 +319,7 @@ class LocationTrackingService : Service() {
             while (isActive) {
                 if (deliveryMode != DeliveryMode.DMR ||
                     !dmrTransport.readiness().isReady ||
-                    mqttConfig.id.isBlank()
+                    profile?.id.isNullOrBlank()
                 ) {
                     delay(250L)
                     continue
@@ -417,7 +417,7 @@ class LocationTrackingService : Service() {
                     lastLocation.value == null ||
                     (deliveryMode == DeliveryMode.INTERNET && !mqttConfig.isComplete) ||
                     (deliveryMode == DeliveryMode.DMR &&
-                        (!dmrTransport.readiness().isReady || mqttConfig.id.isBlank()))
+                        (!dmrTransport.readiness().isReady || profile?.id.isNullOrBlank()))
                 ) {
                     delay(100L)
                 }
@@ -485,8 +485,8 @@ class LocationTrackingService : Service() {
             val currentProfile = profile
             val currentLocation = lastLocation.value
             if (deliveryMode == DeliveryMode.DMR) {
-                if (mqttConfig.id.isBlank()) {
-                    _sosResult.emit(Result.failure(IllegalStateException("DMR Device Identity ID is required")))
+                if (currentProfile?.id.isNullOrBlank()) {
+                    _sosResult.emit(Result.failure(IllegalStateException("Personnel profile ID is required for DMR")))
                     return@launch
                 }
                 if (currentProfile != null && currentLocation != null) {
