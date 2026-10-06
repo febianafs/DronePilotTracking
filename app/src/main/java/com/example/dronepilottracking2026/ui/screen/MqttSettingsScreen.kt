@@ -39,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -81,21 +82,21 @@ fun MqttSettingsScreen(viewModel: MqttViewModel? = null, modifier: Modifier = Mo
     val mqttState by (viewModel?.uiState ?: kotlinx.coroutines.flow.MutableStateFlow(com.example.dronepilottracking2026.data.model.MqttUiState())).collectAsStateWithLifecycle()
     val savedConfig = mqttState.config
     val deliveryMode = mqttState.deliveryMode
-    var server by remember(savedConfig.host) { mutableStateOf(savedConfig.host) }
-    var tcpPort by remember(savedConfig.tcpPort) { mutableStateOf(savedConfig.tcpPort?.toString().orEmpty()) }
-    var wsPort by remember(savedConfig.wsPort) { mutableStateOf(savedConfig.wsPort?.toString().orEmpty()) }
-    var username by remember(savedConfig.username) { mutableStateOf(savedConfig.username) }
-    var password by remember(savedConfig.password) { mutableStateOf(savedConfig.password) }
-    var serialNumber by remember(savedConfig.serialNumber) { mutableStateOf(savedConfig.serialNumber) }
-    var id by remember(savedConfig.id) { mutableStateOf(savedConfig.id) }
-    var useWebSocket by remember(savedConfig.useWebSocket) { mutableStateOf(savedConfig.useWebSocket) }
+    var server by rememberSaveable(savedConfig.host) { mutableStateOf(savedConfig.host) }
+    var tcpPort by rememberSaveable(savedConfig.tcpPort) { mutableStateOf(savedConfig.tcpPort?.toString().orEmpty()) }
+    var wsPort by rememberSaveable(savedConfig.wsPort) { mutableStateOf(savedConfig.wsPort?.toString().orEmpty()) }
+    var username by rememberSaveable(savedConfig.username) { mutableStateOf(savedConfig.username) }
+    var password by rememberSaveable(savedConfig.password) { mutableStateOf(savedConfig.password) }
+    var serialNumber by rememberSaveable(savedConfig.serialNumber) { mutableStateOf(savedConfig.serialNumber) }
+    var id by rememberSaveable(savedConfig.id) { mutableStateOf(savedConfig.id) }
+    var useWebSocket by rememberSaveable(savedConfig.useWebSocket) { mutableStateOf(savedConfig.useWebSocket) }
     // Keep the edited TLS choice while the saved config flow emits after Save.
-    var useTls by remember(savedConfig.host, savedConfig.tcpPort, savedConfig.wsPort, savedConfig.useWebSocket) {
+    var useTls by rememberSaveable(savedConfig.host, savedConfig.tcpPort, savedConfig.wsPort, savedConfig.useWebSocket) {
         mutableStateOf(savedConfig.useTls)
     }
-    var personelDataTopic by remember(savedConfig.personelDataTopic) { mutableStateOf(savedConfig.personelDataTopic) }
-    var personelSosTopic by remember(savedConfig.personelSosTopic) { mutableStateOf(savedConfig.personelSosTopic) }
-    var interval by remember(savedConfig.intervalMs) { mutableStateOf(savedConfig.intervalMs?.toIntervalLabel().orEmpty()) }
+    var personelDataTopic by rememberSaveable(savedConfig.personelDataTopic) { mutableStateOf(savedConfig.personelDataTopic) }
+    var personelSosTopic by rememberSaveable(savedConfig.personelSosTopic) { mutableStateOf(savedConfig.personelSosTopic) }
+    var interval by rememberSaveable(savedConfig.intervalMs) { mutableStateOf(savedConfig.intervalMs?.toIntervalLabel().orEmpty()) }
     var pendingMode by remember { mutableStateOf<DeliveryMode?>(null) }
     var showNotificationAccessDialog by remember { mutableStateOf(false) }
 

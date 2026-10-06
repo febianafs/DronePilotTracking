@@ -49,6 +49,18 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+        viewModelScope.launch {
+            LocationTrackingService.avatarSendResult.collect { result ->
+                if (result.isFailure) {
+                    _uiState.update {
+                        it.copy(
+                            isAvatarSending = false,
+                            error = result.exceptionOrNull()?.message ?: "Avatar belum terkirim"
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun startEditing() {

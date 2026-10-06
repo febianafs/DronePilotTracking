@@ -41,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -73,6 +74,10 @@ import com.example.dronepilottracking2026.ui.theme.TacticalCyan
 import com.example.dronepilottracking2026.ui.theme.TacticalCyanMuted
 import com.example.dronepilottracking2026.ui.theme.TacticalMuted
 import com.example.dronepilottracking2026.ui.theme.TacticalText
+import com.example.dronepilottracking2026.data.model.MAX_PROFILE_ID_LENGTH
+import com.example.dronepilottracking2026.data.model.MAX_PROFILE_NAME_LENGTH
+import com.example.dronepilottracking2026.data.model.MAX_PROFILE_NRP_LENGTH
+import com.example.dronepilottracking2026.data.model.isProfileTextAllowed
 
 @Composable
 fun CardProfile(
@@ -90,10 +95,10 @@ fun CardProfile(
     onSave: (id: String, name: String, nrp: String, avatarUri: String?) -> Unit = { _, _, _, _ -> }
 ) {
     val context = LocalContext.current
-    var name by remember(initialName) { mutableStateOf(initialName) }
-    var id by remember(initialId) { mutableStateOf(initialId) }
-    var nrp by remember(initialNrp) { mutableStateOf(initialNrp) }
-    var avatarUri by remember(initialAvatarUri) { mutableStateOf(initialAvatarUri) }
+    var name by rememberSaveable(initialName) { mutableStateOf(initialName) }
+    var id by rememberSaveable(initialId) { mutableStateOf(initialId) }
+    var nrp by rememberSaveable(initialNrp) { mutableStateOf(initialNrp) }
+    var avatarUri by rememberSaveable(initialAvatarUri) { mutableStateOf(initialAvatarUri) }
     var avatarRefreshKey by remember { mutableStateOf(0) }
     var avatarLoading by remember { mutableStateOf(false) }
     var avatarError by remember { mutableStateOf<String?>(null) }
@@ -190,7 +195,8 @@ fun CardProfile(
             }
         }
 
-    val isFormValid = id.isNotBlank() && name.isNotBlank() && nrp.isNotBlank()
+    val isFormValid = id.isNotBlank() && name.isNotBlank() && nrp.isNotBlank() &&
+        listOf(id, name, nrp).all(::isProfileTextAllowed)
     val hasChanges = !isEditMode ||
         id.trim() != initialId.trim() ||
         name.trim() != initialName.trim() ||
@@ -277,9 +283,10 @@ fun CardProfile(
 
             TacticalTextField(
                 value = id,
-                onValueChange = { id = it },
+                onValueChange = { id = it.take(MAX_PROFILE_ID_LENGTH) },
                 label = "ID *",
                 placeholder = "Masukkan ID",
+                maxLength = MAX_PROFILE_ID_LENGTH,
                 leadingIcon = {
                     Text(text = "ID", color = TacticalCyan, fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
@@ -287,9 +294,10 @@ fun CardProfile(
 
             TacticalTextField(
                 value = name,
-                onValueChange = { name = it },
+                onValueChange = { name = it.take(MAX_PROFILE_NAME_LENGTH) },
                 label = "FULL NAME *",
                 placeholder = "Masukkan nama lengkap",
+                maxLength = MAX_PROFILE_NAME_LENGTH,
                 leadingIcon = {
                     Text(text = "P", color = TacticalCyan, fontWeight = FontWeight.Bold)
                 }
@@ -297,14 +305,22 @@ fun CardProfile(
 
             TacticalTextField(
                 value = nrp,
-                onValueChange = { nrp = it },
+                onValueChange = { nrp = it.take(MAX_PROFILE_NRP_LENGTH) },
                 label = "NRP / PERSONNEL ID *",
                 placeholder = "Masukkan nomor registrasi",
-                keyboardType = KeyboardType.Number,
+                maxLength = MAX_PROFILE_NRP_LENGTH,
                 leadingIcon = {
                     Text(text = "ID", color = TacticalCyan, fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
             )
+
+            if (listOf(id, name, nrp).any { !isProfileTextAllowed(it) }) {
+                Text(
+                    text = "Gunakan huruf, angka, dan spasi saja.",
+                    color = com.example.dronepilottracking2026.ui.theme.TacticalRed,
+                    fontSize = 10.sp
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -520,11 +536,15 @@ private fun TacticalTextField(
     onValueChange: (String) -> Unit,
     label: String,
     placeholder: String,
+    maxLength: Int,
     leadingIcon: @Composable () -> Unit,
     keyboardType: KeyboardType = KeyboardType.Text
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
                 text = label.removeSuffix(" *"),
                 color = TacticalMuted,
@@ -540,6 +560,12 @@ private fun TacticalTextField(
                     fontWeight = FontWeight.Bold
                 )
             }
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = "${value.length}/$maxLength",
+                color = TacticalMuted,
+                fontSize = 9.sp
+            )
         }
         OutlinedTextField(
             value = value,

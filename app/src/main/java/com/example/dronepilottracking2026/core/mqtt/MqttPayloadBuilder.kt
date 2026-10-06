@@ -33,6 +33,12 @@ class MqttPayloadBuilder(private val context: Context) {
         val now = System.currentTimeMillis()
         val heartRate = BluetoothLeService.heartRateForPayload()
         val heartRateConnected = heartRate != null
+        val avatarBase64 = if (includeAvatar) {
+            avatarBase64Cached(profile.avatarUri)
+                ?: throw IllegalStateException("Avatar image could not be encoded")
+        } else {
+            null
+        }
 
         val payload = TrackingPayload(
             timestamp = now,
@@ -72,11 +78,9 @@ class MqttPayloadBuilder(private val context: Context) {
             put("android_id", androidId())
             put("identity", JSONObject().apply {
                 put("id", id)
-                put("avatar", if (includeAvatar) {
-                    avatarBase64Cached(profile.avatarUri) ?: JSONObject.NULL
-                } else {
-                    JSONObject.NULL
-                })
+                // Keep avatar out of regular tracking packets so they do not clear
+                // the server's stored avatar after the one-time upload.
+                if (includeAvatar) put("avatar", avatarBase64)
                 put("nrp", profile.nrp)
                 put("name", profile.name)
             })
@@ -131,8 +135,10 @@ class MqttPayloadBuilder(private val context: Context) {
     private fun avatarBase64Cached(uri: String?): String? {
         if (uri == cachedAvatarUri) return cachedAvatarBase64
         val encoded = avatarBase64(uri)
-        cachedAvatarUri = uri
-        cachedAvatarBase64 = encoded
+        if (encoded != null) {
+            cachedAvatarUri = uri
+            cachedAvatarBase64 = encoded
+        }
         return encoded
     }
 

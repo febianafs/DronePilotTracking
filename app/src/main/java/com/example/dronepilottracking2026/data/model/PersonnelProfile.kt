@@ -11,6 +11,13 @@ data class PersonnelProfile(
         get() = id.isNotBlank() && name.isNotBlank() && nrp.isNotBlank()
 }
 
+const val MAX_PROFILE_ID_LENGTH = 64
+const val MAX_PROFILE_NAME_LENGTH = 100
+const val MAX_PROFILE_NRP_LENGTH = 64
+
+fun isProfileTextAllowed(value: String): Boolean =
+    value.all { it.isLetterOrDigit() || it == ' ' }
+
 fun PersonnelProfile?.orEmpty(): PersonnelProfile = this ?: PersonnelProfile()
 
 sealed interface ProfileLoadState {
@@ -54,7 +61,11 @@ fun validateProfile(id: String, name: String, nrp: String): ProfileValidationRes
         normalizedId.isBlank() -> ProfileValidationResult(false, "ID wajib diisi")
         normalizedName.isBlank() -> ProfileValidationResult(false, "Nama wajib diisi")
         normalizedNrp.isBlank() -> ProfileValidationResult(false, "NRP wajib diisi")
-        normalizedNrp.any { !it.isDigit() } -> ProfileValidationResult(false, "NRP hanya boleh berisi angka")
+        normalizedId.length > MAX_PROFILE_ID_LENGTH -> ProfileValidationResult(false, "ID maksimal $MAX_PROFILE_ID_LENGTH karakter")
+        normalizedName.length > MAX_PROFILE_NAME_LENGTH -> ProfileValidationResult(false, "Nama maksimal $MAX_PROFILE_NAME_LENGTH karakter")
+        normalizedNrp.length > MAX_PROFILE_NRP_LENGTH -> ProfileValidationResult(false, "NRP maksimal $MAX_PROFILE_NRP_LENGTH karakter")
+        !isProfileTextAllowed(normalizedId) || !isProfileTextAllowed(normalizedName) || !isProfileTextAllowed(normalizedNrp) ->
+            ProfileValidationResult(false, "ID, nama, dan NRP hanya boleh berisi huruf, angka, dan spasi")
         else -> ProfileValidationResult(true)
     }
 }

@@ -38,8 +38,10 @@ class CoreBehaviorTest {
     }
 
     @Test
-    fun profileValidationRejectsNondigitPersonnelNumber() {
+    fun profileValidationAcceptsLettersNumbersAndSpacesWithLengthLimits() {
         assertTrue(validateProfile("001", "Pilot", "12345").isValid)
-        assertFalse(validateProfile("001", "Pilot", "12A45").isValid)
+        assertTrue(validateProfile("A 01", "Pilot 2", "12A 45").isValid)
+        assertFalse(validateProfile("ID!", "Pilot", "12A45").isValid)
+        assertFalse(validateProfile("001", "Pilot".repeat(30), "12A45").isValid)
     }
 }

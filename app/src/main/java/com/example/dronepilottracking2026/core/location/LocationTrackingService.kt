@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -358,52 +359,50 @@ class LocationTrackingService : Service() {
     private fun publishCurrentInternetTracking() {
         serviceScope.launch {
             val currentLocation = lastLocation.value ?: return@launch
-            val currentProfile = profile ?: return@launch
-            val config = mqttConfig
-            if (!config.isComplete) return@launch
-            val (batteryLevel, charging) = batterySnapshot(applicationContext)
-            val payload = payloadBuilder.buildTrackingPayload(
-                profile = currentProfile,
-                location = currentLocation,
-                batteryLevel = batteryLevel,
-                charging = charging,
-                serialNumber = config.serialNumber,
-                id = config.id
-            )
-            mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA)
             publishInternetTracking(currentLocation)
         }
     }
 
     private fun sendAvatar() {
         serviceScope.launch {
-            val ready = withTimeoutOrNull(15_000L) {
-                while (profile == null || lastLocation.value == null || !mqttConfig.isComplete) {
-                    delay(100L)
-                }
-                true
-            } == true
-            val currentProfile = profile
-            val currentLocation = lastLocation.value
-            val config = mqttConfig
-            val result = if (!ready || currentProfile == null || currentLocation == null || !config.isComplete) {
-                Result.failure(IllegalStateException("Avatar pending; location or MQTT data is not ready"))
-            } else {
-                val (batteryLevel, charging) = batterySnapshot(applicationContext)
-                val payload = payloadBuilder.buildTrackingPayload(
-                    profile = currentProfile,
-                    location = currentLocation,
-                    batteryLevel = batteryLevel,
-                    charging = charging,
-                    serialNumber = config.serialNumber,
-                    id = currentProfile.id,
-                    includeAvatar = true
-                )
-                if (mqttManager?.publish(config.personelDataTopic, payload, MqttManager.QOS_DATA, kind = "AVATAR") == true) {
-                    Result.success(Unit)
-                } else {
-                    Result.failure(IllegalStateException("Avatar pending; payload queued or publish failed"))
-                }
+            val result = try {
+                withTimeoutOrNull(15_000L) {
+                    // The in-memory profile collector may still hold the previous avatar
+                    // immediately after the user saves an updated profile.
+                    val currentProfile = ProfileDataStore(applicationContext).profile.first {
+                        !it?.avatarUri.isNullOrBlank()
+                    } ?: throw IllegalStateException("Avatar is not available in the saved profile")
+                    profile = currentProfile
+
+                    while (lastLocation.value == null || !mqttConfig.isComplete) delay(100L)
+
+                    val currentLocation = lastLocation.value
+                        ?: throw IllegalStateException("Location is not available")
+                    val config = mqttConfig
+                    val (batteryLevel, charging) = batterySnapshot(applicationContext)
+                    val payload = payloadBuilder.buildTrackingPayload(
+                        profile = currentProfile,
+                        location = currentLocation,
+                        batteryLevel = batteryLevel,
+                        charging = charging,
+                        serialNumber = config.serialNumber,
+                        id = currentProfile.id,
+                        includeAvatar = true
+                    )
+                    if (mqttManager?.publish(
+                            config.personelDataTopic,
+                            payload,
+                            MqttManager.QOS_DATA,
+                            kind = "AVATAR"
+                        ) == true
+                    ) {
+                        Result.success(Unit)
+                    } else {
+                        Result.failure(IllegalStateException("Avatar queued; waiting for MQTT connection"))
+                    }
+                } ?: Result.failure(IllegalStateException("Timed out preparing avatar payload"))
+            } catch (error: Exception) {
+                Result.failure(error)
             }
             _avatarSendResult.emit(result)
         }

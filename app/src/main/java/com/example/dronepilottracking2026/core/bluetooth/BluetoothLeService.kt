@@ -43,6 +43,7 @@ class BluetoothLeService : Service() {
         private const val KEY_NAME = "device_name"
         private const val KEY_ADDRESS = "device_address"
         private const val RECONNECT_DELAY_MS = 5_000L
+        private const val GATT_SETUP_TIMEOUT_MS = 15_000L
         private const val HEART_RATE_STALE_TIMEOUT_MS = 10_000L
 
         val connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
@@ -80,6 +81,31 @@ class BluetoothLeService : Service() {
             publishBpm(0)
         }
     }
+    private val gattSetupTimeoutRunnable = Runnable {
+        if (connectionState.value == BleConnectionState.CONNECTING) {
+            Log.w(TAG, "GATT connection or notification setup timed out")
+            val timedOutGatt = bluetoothGatt
+            bluetoothGatt = null
+            handler.removeCallbacks(heartRateStaleRunnable)
+            try {
+                if (hasConnectPermission()) {
+                    timedOutGatt?.disconnect()
+                    timedOutGatt?.close()
+                }
+            } catch (error: SecurityException) {
+                Log.w(TAG, "Unable to close timed out GATT connection", error)
+            }
+            connectionState.value = BleConnectionState.DISCONNECTED
+            connectedDevice.value = lockedDevice.value
+            publishBpm(0)
+            if (!userRequestedDisconnect && lockedDevice.value != null) {
+                updateNotification("Connection timed out; retrying")
+                scheduleReconnect()
+            } else {
+                updateNotification("Bluetooth standby")
+            }
+        }
+    }
     private var bluetoothGatt: BluetoothGatt? = null
     private var currentAddress: String? = null
     private var userRequestedDisconnect = false
@@ -112,6 +138,7 @@ class BluetoothLeService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(reconnectRunnable)
+        handler.removeCallbacks(gattSetupTimeoutRunnable)
         handler.removeCallbacks(heartRateStaleRunnable)
         disconnectGatt()
         if (currentInstance === this) currentInstance = null
@@ -135,8 +162,11 @@ class BluetoothLeService : Service() {
         try {
             val rawDevice = adapter.getRemoteDevice(device.address)
             bluetoothGatt = rawDevice.connectGatt(this, false, gattCallback)
+            handler.removeCallbacks(gattSetupTimeoutRunnable)
+            handler.postDelayed(gattSetupTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
             updateNotification("Connecting to ${device.name}")
         } catch (e: SecurityException) {
+            handler.removeCallbacks(gattSetupTimeoutRunnable)
             connectionState.value = BleConnectionState.DISCONNECTED
             connectedDevice.value = null
             updateNotification("Bluetooth permission required")
@@ -146,6 +176,7 @@ class BluetoothLeService : Service() {
     fun disconnect() {
         userRequestedDisconnect = true
         handler.removeCallbacks(reconnectRunnable)
+        handler.removeCallbacks(gattSetupTimeoutRunnable)
         reconnectScheduled = false
         clearLockedDevice()
         disconnectGatt()
@@ -160,6 +191,7 @@ class BluetoothLeService : Service() {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (gatt !== bluetoothGatt) return
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     try {
@@ -172,6 +204,7 @@ class BluetoothLeService : Service() {
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    handler.removeCallbacks(gattSetupTimeoutRunnable)
                     handler.removeCallbacks(heartRateStaleRunnable)
                     try {
                         if (hasConnectPermission()) gatt.close()
@@ -194,7 +227,7 @@ class BluetoothLeService : Service() {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (gatt.device.address != currentAddress) return
+            if (gatt !== bluetoothGatt || gatt.device.address != currentAddress) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "GATT service discovery failed: $status")
                 failGattSetup(gatt)
@@ -223,7 +256,8 @@ class BluetoothLeService : Service() {
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (gatt.device.address != currentAddress || descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG) return
+            if (gatt !== bluetoothGatt || gatt.device.address != currentAddress || descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG) return
+            handler.removeCallbacks(gattSetupTimeoutRunnable)
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "Heart rate notification subscription failed: $status")
                 failGattSetup(gatt)
@@ -254,19 +288,26 @@ class BluetoothLeService : Service() {
     }
 
     private fun failGattSetup(gatt: BluetoothGatt) {
-        if (gatt.device.address != currentAddress) return
+        if (gatt !== bluetoothGatt || gatt.device.address != currentAddress) return
+        handler.removeCallbacks(gattSetupTimeoutRunnable)
+        bluetoothGatt = null
         connectionState.value = BleConnectionState.DISCONNECTED
         connectedDevice.value = lockedDevice.value
         handler.removeCallbacks(heartRateStaleRunnable)
         publishBpm(0)
         try {
-            if (hasConnectPermission()) gatt.disconnect()
+            if (hasConnectPermission()) {
+                gatt.disconnect()
+                gatt.close()
+            }
         } catch (error: SecurityException) {
             Log.w(TAG, "Unable to disconnect after GATT setup failure", error)
         }
+        if (!userRequestedDisconnect && lockedDevice.value != null) scheduleReconnect()
     }
 
     private fun disconnectGatt() {
+        handler.removeCallbacks(gattSetupTimeoutRunnable)
         try {
             bluetoothGatt?.disconnect()
             bluetoothGatt?.close()
@@ -298,8 +339,11 @@ class BluetoothLeService : Service() {
         connectedDevice.value = device.copy(state = DeviceState.CONNECTING)
         try {
             bluetoothGatt = adapter.getRemoteDevice(device.address).connectGatt(this, false, gattCallback)
+            handler.removeCallbacks(gattSetupTimeoutRunnable)
+            handler.postDelayed(gattSetupTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
             updateNotification("Reconnecting to ${device.name}")
         } catch (e: SecurityException) {
+            handler.removeCallbacks(gattSetupTimeoutRunnable)
             connectionState.value = BleConnectionState.DISCONNECTED
             scheduleReconnect()
         }

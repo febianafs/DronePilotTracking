@@ -34,11 +34,20 @@ class MqttQueueManager(private val context: Context) {
             val retained = when (kind) {
                 "NORMAL", "LOCATION" -> existing.filterNot { it.topic == topic && it.kind in setOf("NORMAL", "LOCATION") }
                 "SOS", "SOS_CLEAR" -> existing.filterNot { it.topic == topic && it.kind in setOf("SOS", "SOS_CLEAR") }
+                "AVATAR" -> existing.filterNot { it.topic == topic && it.kind == "AVATAR" }
                 else -> existing
             }
             val updated = (retained + MqttQueueEntity(System.currentTimeMillis(), topic, payload, qos, kind))
-                .takeLast(MAX_QUEUE_SIZE)
-                .sortedBy { if (it.kind == "SOS" || it.kind == "SOS_CLEAR") 0 else 1 }
+                .sortedBy { it.id }
+                .toMutableList()
+            // Under pressure, discard the oldest non-SOS item first so tracking
+            // traffic cannot evict an emergency activation or clear command.
+            while (updated.size > MAX_QUEUE_SIZE) {
+                val discardIndex = updated.indexOfFirst { it.kind != "SOS" && it.kind != "SOS_CLEAR" }
+                    .takeIf { it >= 0 } ?: 0
+                updated.removeAt(discardIndex)
+            }
+            updated.sortBy { if (it.kind == "SOS" || it.kind == "SOS_CLEAR") 0 else 1 }
             preferences[key] = AppCrypto.encrypt(toJson(updated).toString())
         } }
     }
