@@ -9,7 +9,6 @@ import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient
 import com.hivemq.client.mqtt.mqtt3.Mqtt3Client
 import com.hivemq.client.mqtt.mqtt3.message.connect.connack.Mqtt3ConnAck
 import com.hivemq.client.mqtt.mqtt3.message.connect.connack.Mqtt3ConnAckReturnCode
-import com.hivemq.client.mqtt.mqtt3.message.publish.Mqtt3Publish
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -59,9 +58,6 @@ class MqttManager(context: Context) {
     val connectionState = _connectionState.asStateFlow()
     private val _publishEvents = MutableSharedFlow<MqttPublishEvent>(extraBufferCapacity = 128)
     val publishEvents = _publishEvents.asSharedFlow()
-    private val _sosMessages = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 32)
-    val sosMessages = _sosMessages.asSharedFlow()
-    private var activeSosTopic: String? = null
 
     @Synchronized
     fun connect(config: MqttConfig) {
@@ -91,7 +87,6 @@ class MqttManager(context: Context) {
         generation.incrementAndGet()
         val oldClient = client
         client = null
-        activeSosTopic = null
         scope.launch { oldClient?.let { closeClient(it) } }
         setState(MqttManagerState.DISCONNECTED)
     }
@@ -109,7 +104,6 @@ class MqttManager(context: Context) {
             connectingConfig = null
             client?.let { old -> scope.launch { closeClient(old) } }
             client = null
-            activeSosTopic = null
         }
         connect(config)
     }
@@ -204,7 +198,6 @@ class MqttManager(context: Context) {
             val oldClient = client
             if (oldClient != null) {
                 client = null
-                activeSosTopic = null
                 closeClient(oldClient)
             }
         }
@@ -253,8 +246,7 @@ class MqttManager(context: Context) {
             } else {
                 connectingConfig = null
                 retryCount = 0
-                Log.i(TAG, "MQTT connected; subscribing to SOS topic=${config.personelSosTopic}")
-                subscribeSosTopic(newClient, config.personelSosTopic)
+                Log.i(TAG, "MQTT connected")
                 setState(MqttManagerState.CONNECTED)
                 scope.launch {
                     queue.flush { message ->
@@ -296,28 +288,6 @@ class MqttManager(context: Context) {
                     }
             }
         }
-    }
-
-    private fun subscribeSosTopic(client: Mqtt3AsyncClient, topic: String) {
-        val normalizedTopic = topic.trim()
-        if (normalizedTopic.isEmpty() || activeSosTopic == normalizedTopic) return
-        client.subscribeWith()
-            .topicFilter(normalizedTopic)
-            .qos(MqttQos.EXACTLY_ONCE)
-            .callback { publish: Mqtt3Publish ->
-                if (publish.isRetain) return@callback
-                val payload = String(publish.payloadAsBytes, StandardCharsets.UTF_8)
-                _sosMessages.tryEmit(normalizedTopic to payload)
-            }
-            .send()
-            .whenComplete { _, error ->
-                if (error == null) {
-                    activeSosTopic = normalizedTopic
-                } else {
-                    emitPublish(MqttPublishEvent(normalizedTopic, "SUBSCRIPTION", false,
-                        "SOS subscription failed: ${error.message}"))
-                }
-            }
     }
 
     private suspend fun publishNow(message: MqttQueueEntity): Boolean {

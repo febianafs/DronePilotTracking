@@ -50,7 +50,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONObject
 
 private data class DmrSettingsSnapshot(
     val mode: DeliveryMode,
@@ -124,7 +123,6 @@ class LocationTrackingService : Service() {
     private var settingsJob: Job? = null
     private var dmrSchedulerJob: Job? = null
     private var dmrSosRepeatJob: Job? = null
-    private var mqttSosJob: kotlinx.coroutines.Job? = null
     private var mqttManager: MqttManager? = null
     private var mqttConfig: MqttConfig = MqttConfig()
     private var profile: PersonnelProfile? = null
@@ -159,27 +157,11 @@ class LocationTrackingService : Service() {
         dmrTransport = DmrTransport(applicationContext)
         sequenceDataStore = DmrSequenceDataStore(applicationContext)
         createNotificationChannel()
-        observeIncomingSos()
     }
 
     private fun setSosActive(active: Boolean) {
         _sosActive.value = active
         getSharedPreferences(SOS_PREFS, MODE_PRIVATE).edit().putBoolean(SOS_ACTIVE_KEY, active).apply()
-    }
-
-    private fun observeIncomingSos() {
-        val manager = mqttManager ?: return
-        mqttSosJob?.cancel()
-        mqttSosJob = serviceScope.launch {
-            manager.sosMessages.collect { (_, payload) ->
-                runCatching {
-                    when (JSONObject(payload).optInt("sos", -1)) {
-                        1 -> setSosActive(true)
-                        0 -> setSosActive(false)
-                    }
-                }
-            }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -206,7 +188,6 @@ class LocationTrackingService : Service() {
         startAsForeground()
         if (locationJob?.isActive == true) return
         mqttManager = (application as DronePilotApplication).mqttManager
-        observeIncomingSos()
         observeSettings()
         startLocationUpdates(locationIntervalMs)
         startHeartRatePublisher()
@@ -597,7 +578,7 @@ class LocationTrackingService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Drone Pilot Tracking")
             .setContentText("Location tracking is active")
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.logopst)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()

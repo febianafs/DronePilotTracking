@@ -388,7 +388,7 @@ class BluetoothLeService : Service() {
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Drone Pilot Tracking")
             .setContentText(text)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.logopst)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()
