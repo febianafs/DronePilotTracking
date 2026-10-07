@@ -25,13 +25,12 @@ import com.example.dronepilottracking2026.data.local.ProfileDataStore
 import com.example.dronepilottracking2026.data.model.DEFAULT_DMR_INTERVAL_MS
 import com.example.dronepilottracking2026.data.model.DEFAULT_DMR_SLOT
 import com.example.dronepilottracking2026.data.model.DMR_CYCLE_MS
-import com.example.dronepilottracking2026.data.model.DMR_SLOT_GRACE_MS
-import com.example.dronepilottracking2026.data.model.DMR_SLOT_SPACING_MS
 import com.example.dronepilottracking2026.data.model.DMR_SOS_REPEAT_INTERVAL_MS
 import com.example.dronepilottracking2026.data.model.DeliveryMode
 import com.example.dronepilottracking2026.data.model.LocationData
 import com.example.dronepilottracking2026.data.model.MqttConfig
 import com.example.dronepilottracking2026.data.model.PersonnelProfile
+import com.example.dronepilottracking2026.data.model.isDmrSlotWindow
 import com.example.dronepilottracking2026.data.repository.LocationRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -123,6 +122,8 @@ class LocationTrackingService : Service() {
     private var settingsJob: Job? = null
     private var dmrSchedulerJob: Job? = null
     private var dmrSosRepeatJob: Job? = null
+    private var internetSosRepeatJob: Job? = null
+    private var sosSendJob: Job? = null
     private var mqttManager: MqttManager? = null
     private var mqttConfig: MqttConfig = MqttConfig()
     private var profile: PersonnelProfile? = null
@@ -245,9 +246,13 @@ class LocationTrackingService : Service() {
     private fun isDmrSlotDue(now: Long = System.currentTimeMillis()): Boolean {
         val cycle = Math.floorDiv(now, DMR_CYCLE_MS)
         if (cycle == lastDmrCycle) return false
-        val offset = Math.floorMod(now, DMR_CYCLE_MS)
-        val slotOffset = (dmrSlot - 1) * DMR_SLOT_SPACING_MS
-        return offset in slotOffset..(slotOffset + DMR_SLOT_GRACE_MS)
+        return isDmrSlotWindow(now, dmrSlot)
+    }
+
+    private suspend fun awaitDmrSlotWindow() {
+        while (!isDmrSlotWindow(System.currentTimeMillis(), dmrSlot)) {
+            delay(100L)
+        }
     }
 
     private suspend fun createAndSendDmrFrame(type: String, location: LocationData) {
@@ -390,8 +395,10 @@ class LocationTrackingService : Service() {
     private fun sendSos() {
         _sosActive.value = true
         dmrSosRepeatJob?.cancel()
+        internetSosRepeatJob?.cancel()
+        sosSendJob?.cancel()
         setSosActive(true)
-        serviceScope.launch {
+        sosSendJob = serviceScope.launch {
             val ready = withTimeoutOrNull(15_000L) {
                 while (
                     profile == null ||
@@ -421,6 +428,7 @@ class LocationTrackingService : Service() {
                     if (!config.isComplete) {
                         Result.failure(IllegalStateException("SOS active, waiting for location or MQTT data"))
                     } else {
+                        awaitDmrSlotWindow()
                         val payload = payloadBuilder.buildSosPayload(
                             currentProfile,
                             currentLocation,
@@ -433,6 +441,7 @@ class LocationTrackingService : Service() {
                             MqttManager.QOS_SOS,
                             kind = "SOS"
                         ) == true
+                        startInternetSosRepeater()
                         if (published) Result.success(Unit)
                         else Result.failure(IllegalStateException("SOS queued or failed to publish; check MQTT status"))
                     }
@@ -454,15 +463,46 @@ class LocationTrackingService : Service() {
         }
     }
 
+    private fun startInternetSosRepeater() {
+        internetSosRepeatJob?.cancel()
+        internetSosRepeatJob = serviceScope.launch {
+            while (isActive && _sosActive.value && deliveryMode == DeliveryMode.INTERNET) {
+                delay(DMR_SOS_REPEAT_INTERVAL_MS)
+                if (!isActive || !_sosActive.value || deliveryMode != DeliveryMode.INTERNET) break
+                val currentProfile = profile ?: continue
+                val currentLocation = lastLocation.value ?: continue
+                val config = mqttConfig
+                if (!config.isComplete) continue
+                awaitDmrSlotWindow()
+                if (!isActive || !_sosActive.value || deliveryMode != DeliveryMode.INTERNET) break
+                val payload = payloadBuilder.buildSosPayload(
+                    currentProfile,
+                    currentLocation,
+                    serialNumber = config.serialNumber,
+                    id = currentProfile.id
+                )
+                mqttManager?.publish(
+                    config.personelSosTopic,
+                    payload,
+                    MqttManager.QOS_SOS,
+                    kind = "SOS"
+                )
+            }
+        }
+    }
+
     private fun clearSos() {
         // Matikan indikator lokal segera saat tombol CLEAR SOS ditekan sekali.
         setSosActive(false)
         _sosActive.value = false
         dmrSosRepeatJob?.cancel()
         dmrSosRepeatJob = null
+        internetSosRepeatJob?.cancel()
+        internetSosRepeatJob = null
+        sosSendJob?.cancel()
         dmrForceNextData = true
 
-        serviceScope.launch {
+        sosSendJob = serviceScope.launch {
             val currentProfile = profile
             val currentLocation = lastLocation.value
             if (deliveryMode == DeliveryMode.DMR) {
@@ -483,6 +523,7 @@ class LocationTrackingService : Service() {
                 currentLocation == null -> Result.failure(IllegalStateException("SOS cleared locally; location is not available"))
                 !config.isComplete -> Result.failure(IllegalStateException("SOS cleared locally; MQTT configuration is incomplete"))
                 else -> {
+                    awaitDmrSlotWindow()
                     val payload = payloadBuilder.buildSosPayload(currentProfile, currentLocation, sos = 0, serialNumber = config.serialNumber, id = currentProfile.id)
                     val published = mqttManager?.publish(config.personelSosTopic, payload, MqttManager.QOS_SOS, kind = "SOS_CLEAR") == true
                     if (published) Result.success(Unit)
@@ -555,6 +596,8 @@ class LocationTrackingService : Service() {
         mqttConfigJob?.cancel()
         dmrSchedulerJob?.cancel()
         dmrSosRepeatJob?.cancel()
+        internetSosRepeatJob?.cancel()
+        sosSendJob?.cancel()
         settingsJob?.cancel()
         mqttManager?.disconnect()
         serviceScope.cancel()

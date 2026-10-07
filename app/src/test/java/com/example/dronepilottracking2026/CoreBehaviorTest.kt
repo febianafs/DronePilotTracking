@@ -1,7 +1,11 @@
 package com.example.dronepilottracking2026
 
 import com.example.dronepilottracking2026.core.bluetooth.BleHeartRateParser
+import com.example.dronepilottracking2026.data.model.DMR_CYCLE_MS
+import com.example.dronepilottracking2026.data.model.DMR_SLOT_SPACING_MS
 import com.example.dronepilottracking2026.data.model.MqttConfig
+import com.example.dronepilottracking2026.data.model.isDmrSlotWindow
+import com.example.dronepilottracking2026.data.model.nextDmrSequenceValue
 import com.example.dronepilottracking2026.data.model.validateProfile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -45,5 +49,21 @@ class CoreBehaviorTest {
         assertFalse(validateProfile("A01 ", "Pilot", "12345").isValid)
         assertFalse(validateProfile("ID!", "Pilot", "12A45").isValid)
         assertFalse(validateProfile("001", "Pilot".repeat(30), "12A45").isValid)
+    }
+
+    @Test
+    fun dmrCycleUsesNineSecondsAndOnePointFiveSecondSlots() {
+        assertEquals(9_000L, DMR_CYCLE_MS)
+        assertEquals(1_500L, DMR_SLOT_SPACING_MS)
+        assertTrue(isDmrSlotWindow(now = 0L, slot = 1))
+        assertFalse(isDmrSlotWindow(now = 1_500L, slot = 1))
+        assertTrue(isDmrSlotWindow(now = 1_500L, slot = 2))
+    }
+
+    @Test
+    fun dmrSequenceWrapsToZeroAfter299() {
+        assertEquals(1L, nextDmrSequenceValue(0L))
+        assertEquals(299L, nextDmrSequenceValue(298L))
+        assertEquals(0L, nextDmrSequenceValue(299L))
     }
 }

@@ -48,6 +48,8 @@ import com.example.dronepilottracking2026.data.model.MqttConfig
 import com.example.dronepilottracking2026.data.model.MqttConnectionState
 
 import com.example.dronepilottracking2026.data.model.DeliveryMode
+import com.example.dronepilottracking2026.data.model.DMR_SLOT_SPACING_MS
+import com.example.dronepilottracking2026.data.model.DMR_SLOT_COUNT
 import com.example.dronepilottracking2026.core.dmr.DmrReadiness
 import com.example.dronepilottracking2026.core.dmr.DmrSendStatus
 import com.example.dronepilottracking2026.ui.mqtt.MqttViewModel
@@ -682,7 +684,7 @@ private fun DmrSlotSelector(
         )
         Box {
             OutlinedTextField(
-                value = "SLOT $slot  •  ${(slot - 1) * 2} SECOND OFFSET",
+                value = "SLOT $slot  •  ${dmrSlotOffsetLabel(slot)} SECOND OFFSET",
                 onValueChange = {},
                 modifier = Modifier.fillMaxWidth(),
                 readOnly = true,
@@ -704,7 +706,7 @@ private fun DmrSlotSelector(
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 dmrSlotOptions.forEach { option ->
                     DropdownMenuItem(
-                        text = { Text("SLOT $option  •  ${(option - 1) * 2} SECOND OFFSET") },
+                        text = { Text("SLOT $option  •  ${dmrSlotOffsetLabel(option)} SECOND OFFSET") },
                         onClick = {
                             onSlotChange(option)
                             expanded = false
@@ -713,6 +715,15 @@ private fun DmrSlotSelector(
                 }
             }
         }
+    }
+}
+
+private fun dmrSlotOffsetLabel(slot: Int): String {
+    val offsetMs = (slot.coerceIn(1, DMR_SLOT_COUNT) - 1) * DMR_SLOT_SPACING_MS
+    return if (offsetMs % 1_000L == 0L) {
+        (offsetMs / 1_000L).toString()
+    } else {
+        String.format(java.util.Locale.US, "%.1f", offsetMs / 1_000.0)
     }
 }
 

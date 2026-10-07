@@ -317,7 +317,7 @@ fun CardProfile(
                 placeholder = "Masukkan nomor registrasi",
                 maxLength = MAX_PROFILE_NRP_LENGTH,
                 leadingIcon = {
-                    Text(text = "ID", color = TacticalCyan, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                    Text(text = "NRP", color = TacticalCyan, fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
             )
 
