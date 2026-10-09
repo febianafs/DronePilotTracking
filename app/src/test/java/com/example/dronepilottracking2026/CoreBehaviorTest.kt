@@ -1,7 +1,11 @@
 package com.example.dronepilottracking2026
 
 import com.example.dronepilottracking2026.core.bluetooth.BleHeartRateParser
+import com.example.dronepilottracking2026.core.network.NetworkStatus
+import com.example.dronepilottracking2026.data.model.ConnectivityIssue
 import com.example.dronepilottracking2026.data.model.DMR_CYCLE_MS
+import com.example.dronepilottracking2026.data.model.DeliveryMode
+import com.example.dronepilottracking2026.data.model.connectivityIssue
 import com.example.dronepilottracking2026.data.model.DMR_SLOT_SPACING_MS
 import com.example.dronepilottracking2026.data.model.MqttConfig
 import com.example.dronepilottracking2026.data.model.isDmrSlotWindow
@@ -58,6 +62,28 @@ class CoreBehaviorTest {
         assertTrue(isDmrSlotWindow(now = 0L, slot = 1))
         assertFalse(isDmrSlotWindow(now = 1_500L, slot = 1))
         assertTrue(isDmrSlotWindow(now = 1_500L, slot = 2))
+    }
+
+    @Test
+    fun connectivityIssueReportsTheMostFundamentalCause() {
+        fun issue(
+            mode: DeliveryMode = DeliveryMode.INTERNET,
+            configured: Boolean = true,
+            network: NetworkStatus = NetworkStatus.AVAILABLE,
+            connected: Boolean = false,
+            rejected: Boolean = false
+        ) = connectivityIssue(mode, configured, network, connected, rejected)
+
+        assertEquals(ConnectivityIssue.NO_NETWORK, issue(network = NetworkStatus.NONE, connected = true))
+        assertEquals(ConnectivityIssue.NO_INTERNET, issue(network = NetworkStatus.NO_INTERNET))
+        assertEquals(ConnectivityIssue.SERVER_UNREACHABLE, issue())
+        assertEquals(ConnectivityIssue.SERVER_REJECTED, issue(rejected = true))
+        assertEquals(null, issue(connected = true))
+        // A reachable broker on a network Android could not validate is still healthy.
+        assertEquals(null, issue(network = NetworkStatus.NO_INTERNET, connected = true))
+        // DMR mode and unconfigured MQTT never show the banner.
+        assertEquals(null, issue(mode = DeliveryMode.DMR, network = NetworkStatus.NONE))
+        assertEquals(null, issue(configured = false, network = NetworkStatus.NONE))
     }
 
     @Test

@@ -45,6 +45,7 @@ import com.example.dronepilottracking2026.ui.screen.MqttSettingsScreen
 import com.example.dronepilottracking2026.ui.screen.TrackingStatusScreen
 import com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService
 import com.example.dronepilottracking2026.core.location.LocationTrackingService
+import com.example.dronepilottracking2026.ui.network.ConnectivityBanner
 import com.example.dronepilottracking2026.ui.sos.GlobalSosStatusBar
 import com.example.dronepilottracking2026.ui.theme.DronePilotTracking2026Theme
 
@@ -76,6 +77,7 @@ private fun DronePilotApp() {
     val profileLoadState by profileViewModel.loadState.collectAsStateWithLifecycle()
     val profileUiState by profileViewModel.uiState.collectAsStateWithLifecycle()
     val mqttUiState by mqttViewModel.uiState.collectAsStateWithLifecycle()
+    val connectivityIssue by mqttViewModel.connectivityIssue.collectAsStateWithLifecycle()
 
     // Reconnect a previously paired heart rate device as soon as the app opens, not only
     // when the Heart Rate tab is visited (e.g. after a reboot or force stop).
@@ -158,6 +160,14 @@ private fun DronePilotApp() {
                             onClear = { LocationTrackingService.clearSos(context) },
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                         )
+                        connectivityIssue?.let { issue ->
+                            ConnectivityBanner(
+                                issue = issue,
+                                sosActive = sosActive,
+                                onClick = { currentDestinationName = AppDestination.MQTT_SETTINGS.name },
+                                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
+                            )
+                        }
                         Box(modifier = Modifier.weight(1f)) {
                             when (currentDestination) {
                             AppDestination.HOME -> TrackingStatusScreen(

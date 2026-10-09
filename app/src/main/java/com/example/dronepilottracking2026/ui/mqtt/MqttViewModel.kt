@@ -17,11 +17,23 @@ import com.example.dronepilottracking2026.data.model.MqttConfig
 import com.example.dronepilottracking2026.data.model.MqttConnectionState
 import com.example.dronepilottracking2026.data.model.MqttUiState
 import com.example.dronepilottracking2026.data.repository.MqttConfigRepository
+import com.example.dronepilottracking2026.core.location.LocationTrackingService
+import com.example.dronepilottracking2026.core.network.networkStatusFlow
+import com.example.dronepilottracking2026.data.model.CONNECTIVITY_BANNER_HIDE_DELAY_MS
+import com.example.dronepilottracking2026.data.model.CONNECTIVITY_BANNER_SHOW_DELAY_MS
+import com.example.dronepilottracking2026.data.model.CONNECTIVITY_BANNER_SOS_SHOW_DELAY_MS
+import com.example.dronepilottracking2026.data.model.ConnectivityIssue
+import com.example.dronepilottracking2026.data.model.connectivityIssue
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -42,10 +54,36 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<MqttUiState> = _uiState.asStateFlow()
     private var testRequestId = 0L
     private var testResultClearJob: Job? = null
+    private val lastFailureRejected = MutableStateFlow(false)
+
+    /** Delivery problem to show in the banner, delayed so brief signal drops do not flicker it. */
+    val connectivityIssue: StateFlow<ConnectivityIssue?> = combine(
+        networkStatusFlow(application),
+        manager.connectionState,
+        lastFailureRejected,
+        _uiState,
+        LocationTrackingService.sosActive
+    ) { network, mqttState, rejected, ui, sosActive ->
+        connectivityIssue(
+            deliveryMode = ui.deliveryMode,
+            mqttConfigured = ui.config.isComplete,
+            network = network,
+            mqttConnected = mqttState == MqttManagerState.CONNECTED,
+            lastFailureRejected = rejected
+        ) to sosActive
+    }
+        .distinctUntilChanged()
+        .delayedBanner()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     init {
         viewModelScope.launch {
             manager.connectionState.collect { state ->
+                when (state) {
+                    is MqttManagerState.ERROR -> lastFailureRejected.value = state.rejected
+                    MqttManagerState.CONNECTED -> lastFailureRejected.value = false
+                    else -> Unit
+                }
                 _uiState.update { it.copy(connectionState = state.toUiState(), error = state.errorMessage()) }
             }
         }
@@ -240,6 +278,32 @@ class MqttViewModel(application: Application) : AndroidViewModel(application) {
             delay(TEST_RESULT_DISPLAY_MS)
             if (requestId == testRequestId && _uiState.value.testResult == result) {
                 _uiState.update { it.copy(testResult = null) }
+            }
+        }
+    }
+
+    /**
+     * Shows an issue only after it persists (shorter while SOS is active) and hides it only after
+     * delivery has been healthy for a while. A visible banner switches to a new issue immediately.
+     */
+    private fun Flow<Pair<ConnectivityIssue?, Boolean>>.delayedBanner(): Flow<ConnectivityIssue?> = channelFlow {
+        var visible: ConnectivityIssue? = null
+        collectLatest { (issue, sosActive) ->
+            when {
+                issue == null -> if (visible != null) {
+                    delay(CONNECTIVITY_BANNER_HIDE_DELAY_MS)
+                    visible = null
+                    send(null)
+                }
+                visible != null -> {
+                    visible = issue
+                    send(issue)
+                }
+                else -> {
+                    delay(if (sosActive) CONNECTIVITY_BANNER_SOS_SHOW_DELAY_MS else CONNECTIVITY_BANNER_SHOW_DELAY_MS)
+                    visible = issue
+                    send(issue)
+                }
             }
         }
     }

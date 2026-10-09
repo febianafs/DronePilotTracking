@@ -9,6 +9,7 @@ import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient
 import com.hivemq.client.mqtt.mqtt3.Mqtt3Client
 import com.hivemq.client.mqtt.mqtt3.message.connect.connack.Mqtt3ConnAck
 import com.hivemq.client.mqtt.mqtt3.message.connect.connack.Mqtt3ConnAckReturnCode
+import com.hivemq.client.mqtt.mqtt3.exceptions.Mqtt3ConnAckException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -236,7 +237,9 @@ class MqttManager(context: Context) {
             if (error != null || ack?.returnCode != Mqtt3ConnAckReturnCode.SUCCESS) {
                 connectingConfig = null
                 Log.e(TAG, "MQTT connection failed: ${error?.message ?: ack?.returnCode}")
-                setState(MqttManagerState.ERROR(error?.message ?: "Broker rejected connection"))
+                // A CONNACK error means the broker was reached but refused us (e.g. bad credentials).
+                val rejected = error is Mqtt3ConnAckException || (error == null && ack != null)
+                setState(MqttManagerState.ERROR(error?.message ?: "Broker rejected connection", rejected))
                 scope.launch {
                     closeClient(newClient)
                     if (!intentionallyStopped && autoReconnectEnabled && generation.get() == currentGeneration) {
@@ -341,5 +344,6 @@ sealed interface MqttManagerState {
     data object CONNECTING : MqttManagerState
     data object CONNECTED : MqttManagerState
     data object DISCONNECTED : MqttManagerState
-    data class ERROR(val message: String) : MqttManagerState
+    /** [rejected] is true when the broker answered but refused the connection. */
+    data class ERROR(val message: String, val rejected: Boolean = false) : MqttManagerState
 }
