@@ -1,6 +1,7 @@
 package com.example.dronepilottracking2026
 
 import android.app.Application
+import com.example.dronepilottracking2026.core.location.LocationTrackingService
 import com.example.dronepilottracking2026.core.mqtt.MqttManager
 import com.example.dronepilottracking2026.core.mqtt.MqttReconnectManager
 import io.netty.util.internal.logging.InternalLoggerFactory
@@ -18,6 +19,7 @@ class DronePilotApplication : Application() {
         mqttManager = MqttManager(this)
         mqttReconnectManager = MqttReconnectManager(this, mqttManager)
         mqttReconnectManager.start()
+        LocationTrackingService.restoreSosState(this)
     }
 }
 

@@ -11,11 +11,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -41,6 +43,7 @@ import com.example.dronepilottracking2026.ui.mqtt.MqttViewModel
 import com.example.dronepilottracking2026.ui.screen.HeartRateScreen
 import com.example.dronepilottracking2026.ui.screen.MqttSettingsScreen
 import com.example.dronepilottracking2026.ui.screen.TrackingStatusScreen
+import com.example.dronepilottracking2026.core.bluetooth.BluetoothLeService
 import com.example.dronepilottracking2026.core.location.LocationTrackingService
 import com.example.dronepilottracking2026.ui.sos.GlobalSosStatusBar
 import com.example.dronepilottracking2026.ui.theme.DronePilotTracking2026Theme
@@ -73,6 +76,12 @@ private fun DronePilotApp() {
     val profileLoadState by profileViewModel.loadState.collectAsStateWithLifecycle()
     val profileUiState by profileViewModel.uiState.collectAsStateWithLifecycle()
     val mqttUiState by mqttViewModel.uiState.collectAsStateWithLifecycle()
+
+    // Reconnect a previously paired heart rate device as soon as the app opens, not only
+    // when the Heart Rate tab is visited (e.g. after a reboot or force stop).
+    LaunchedEffect(Unit) {
+        if (BluetoothLeService.hasLockedDevice(context)) bluetoothViewModel.ensureService()
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -108,6 +117,7 @@ private fun DronePilotApp() {
                     modifier = Modifier
                         .fillMaxSize()
                         .background(TacticalBackground)
+                        .statusBarsPadding()
                         .imePadding()
                         .verticalScroll(rememberScrollState())
                         .padding(16.dp)
@@ -139,6 +149,7 @@ private fun DronePilotApp() {
                     modifier = Modifier
                         .fillMaxSize()
                         .background(TacticalBackground)
+                        .statusBarsPadding()
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         GlobalSosStatusBar(

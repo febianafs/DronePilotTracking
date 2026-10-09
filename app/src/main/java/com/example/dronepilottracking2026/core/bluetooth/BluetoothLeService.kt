@@ -12,6 +12,10 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -20,6 +24,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.ParcelUuid
 import android.util.Log
 
 import androidx.core.app.NotificationCompat
@@ -44,6 +49,7 @@ class BluetoothLeService : Service() {
         private const val KEY_ADDRESS = "device_address"
         private const val RECONNECT_DELAY_MS = 5_000L
         private const val GATT_SETUP_TIMEOUT_MS = 15_000L
+        private const val RECONNECT_SCAN_TIMEOUT_MS = 10_000L
         private const val HEART_RATE_STALE_TIMEOUT_MS = 10_000L
 
         val connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
@@ -54,6 +60,11 @@ class BluetoothLeService : Service() {
         @Volatile private var currentInstance: BluetoothLeService? = null
 
         fun getRunningService(): BluetoothLeService? = currentInstance
+
+        /** True when a heart rate device was paired before, so the service should reconnect on app start. */
+        fun hasLockedDevice(context: Context): Boolean =
+            !context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(KEY_ADDRESS, null).isNullOrBlank()
 
         val HEART_RATE_SERVICE: UUID = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb")
         val HEART_RATE_CHARACTERISTIC: UUID = UUID.fromString("00002a37-0000-1000-8000-00805f9b34fb")
@@ -110,6 +121,19 @@ class BluetoothLeService : Service() {
     private var currentAddress: String? = null
     private var userRequestedDisconnect = false
     private var reconnectScheduled = false
+    private var reconnectScanCallback: ScanCallback? = null
+
+    private val reconnectScanTimeoutRunnable = Runnable {
+        if (reconnectScanCallback == null) return@Runnable
+        Log.w(TAG, "Locked device not found while scanning; retrying")
+        stopReconnectScan()
+        if (connectionState.value == BleConnectionState.CONNECTING && bluetoothGatt == null) {
+            connectionState.value = BleConnectionState.DISCONNECTED
+            connectedDevice.value = lockedDevice.value
+        }
+        updateNotification("Waiting for ${lockedDevice.value?.name ?: "device"}")
+        scheduleReconnect()
+    }
 
     private val reconnectRunnable = Runnable {
         reconnectScheduled = false
@@ -123,7 +147,11 @@ class BluetoothLeService : Service() {
         lockedDevice.value = loadLockedDevice()
         currentAddress = lockedDevice.value?.address
         createNotificationChannel()
-        startAsForeground("Bluetooth standby")
+        if (!startAsForeground("Bluetooth standby")) {
+            // Permission was revoked (e.g. sticky restart); stop instead of crashing.
+            stopSelf()
+            return
+        }
         if (lockedDevice.value != null) scheduleReconnect()
     }
 
@@ -137,6 +165,7 @@ class BluetoothLeService : Service() {
     }
 
     override fun onDestroy() {
+        stopReconnectScan()
         handler.removeCallbacks(reconnectRunnable)
         handler.removeCallbacks(gattSetupTimeoutRunnable)
         handler.removeCallbacks(heartRateStaleRunnable)
@@ -151,6 +180,7 @@ class BluetoothLeService : Service() {
             return
         }
         userRequestedDisconnect = false
+        stopReconnectScan()
         handler.removeCallbacks(reconnectRunnable)
         reconnectScheduled = false
         currentAddress = device.address
@@ -161,7 +191,7 @@ class BluetoothLeService : Service() {
         connectedDevice.value = device.copy(state = DeviceState.CONNECTING)
         try {
             val rawDevice = adapter.getRemoteDevice(device.address)
-            bluetoothGatt = rawDevice.connectGatt(this, false, gattCallback)
+            bluetoothGatt = rawDevice.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             handler.removeCallbacks(gattSetupTimeoutRunnable)
             handler.postDelayed(gattSetupTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
             updateNotification("Connecting to ${device.name}")
@@ -175,6 +205,7 @@ class BluetoothLeService : Service() {
 
     fun disconnect() {
         userRequestedDisconnect = true
+        stopReconnectScan()
         handler.removeCallbacks(reconnectRunnable)
         handler.removeCallbacks(gattSetupTimeoutRunnable)
         reconnectScheduled = false
@@ -337,16 +368,81 @@ class BluetoothLeService : Service() {
         currentAddress = device.address
         connectionState.value = BleConnectionState.CONNECTING
         connectedDevice.value = device.copy(state = DeviceState.CONNECTING)
+        updateNotification("Reconnecting to ${device.name}")
+        // After a reboot the Bluetooth stack has forgotten the device's address type, so a direct
+        // connect to the saved address never completes. Scan first (as a manual reconnect does)
+        // and connect using the scanned device; fall back to a direct connect if scanning is unavailable.
+        if (!startReconnectScan(adapter, device.address)) {
+            connectGattTo(adapter.getRemoteDevice(device.address))
+        }
+    }
+
+    private fun startReconnectScan(adapter: BluetoothAdapter, address: String): Boolean {
+        if (!hasScanPermission()) return false
+        val scanner = adapter.bluetoothLeScanner ?: return false
+        stopReconnectScan()
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                if (reconnectScanCallback !== this || result.device.address != address) return
+                stopReconnectScan()
+                if (userRequestedDisconnect || lockedDevice.value?.address != address) return
+                connectGattTo(result.device)
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                if (reconnectScanCallback !== this) return
+                Log.w(TAG, "Reconnect scan failed: $errorCode; trying direct connect")
+                reconnectScanCallback = null
+                handler.removeCallbacks(reconnectScanTimeoutRunnable)
+                connectGattTo(adapter.getRemoteDevice(address))
+            }
+        }
+        // Filter on the standard Heart Rate service so the scan keeps running with the screen off;
+        // the saved address is matched in the callback so another pilot's device is never picked.
+        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(HEART_RATE_SERVICE)).build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        return try {
+            reconnectScanCallback = callback
+            scanner.startScan(listOf(filter), settings, callback)
+            handler.postDelayed(reconnectScanTimeoutRunnable, RECONNECT_SCAN_TIMEOUT_MS)
+            true
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Unable to start reconnect scan", error)
+            reconnectScanCallback = null
+            false
+        }
+    }
+
+    private fun stopReconnectScan() {
+        handler.removeCallbacks(reconnectScanTimeoutRunnable)
+        val callback = reconnectScanCallback ?: return
+        reconnectScanCallback = null
         try {
-            bluetoothGatt = adapter.getRemoteDevice(device.address).connectGatt(this, false, gattCallback)
+            if (hasScanPermission()) BluetoothAdapter.getDefaultAdapter()?.bluetoothLeScanner?.stopScan(callback)
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Unable to stop reconnect scan", error)
+        }
+    }
+
+    private fun connectGattTo(device: BluetoothDevice) {
+        try {
+            bluetoothGatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             handler.removeCallbacks(gattSetupTimeoutRunnable)
             handler.postDelayed(gattSetupTimeoutRunnable, GATT_SETUP_TIMEOUT_MS)
-            updateNotification("Reconnecting to ${device.name}")
         } catch (e: SecurityException) {
             handler.removeCallbacks(gattSetupTimeoutRunnable)
             connectionState.value = BleConnectionState.DISCONNECTED
             scheduleReconnect()
         }
+    }
+
+    private fun hasScanPermission(): Boolean {
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        return ContextCompat.checkSelfPermission(this, permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
     private fun saveLockedDevice(device: BluetoothDeviceModel) {
@@ -393,17 +489,27 @@ class BluetoothLeService : Service() {
             .setOngoing(true)
             .build()
 
-    private fun startAsForeground(text: String) {
+    private fun startAsForeground(text: String): Boolean {
+        if (!hasConnectPermission()) {
+            Log.w(TAG, "BLUETOOTH_CONNECT not granted; cannot start connectedDevice foreground service")
+            return false
+        }
         val notification = buildNotification(text)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        } catch (error: SecurityException) {
+            Log.e(TAG, "Unable to start Bluetooth foreground service", error)
+            false
         }
     }
 

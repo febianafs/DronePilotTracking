@@ -43,6 +43,10 @@ class BluetoothViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun ensureService() {
         val context = getApplication<Application>()
+        // A connectedDevice foreground service cannot start without BLUETOOTH_CONNECT on Android 12+.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) return
         val intent = Intent(context, BluetoothLeService::class.java)
         try {
             ContextCompat.startForegroundService(context, intent)

@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,7 +42,37 @@ import com.example.dronepilottracking2026.ui.theme.TacticalRed
 import com.example.dronepilottracking2026.ui.theme.TacticalText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import android.content.Context
+import android.os.Build
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+
+private const val HOLD_START_VIBRATION_MS = 100L
+private val SOS_BUTTON_WIDTH = 140.dp
+private val SOS_BUTTON_HEIGHT = 54.dp
+
+/** Short silent pulse confirming the SOS hold has started. */
+private fun vibrateHoldStart(context: Context) {
+    val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+    } else {
+        @Suppress("DEPRECATION")
+        context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    }
+    if (vibrator?.hasVibrator() != true) return
+    runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(
+                VibrationEffect.createOneShot(HOLD_START_VIBRATION_MS, VibrationEffect.DEFAULT_AMPLITUDE)
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(HOLD_START_VIBRATION_MS)
+        }
+    }
+}
 
 @Composable
 fun GlobalSosStatusBar(
@@ -66,6 +97,7 @@ fun GlobalSosStatusBar(
         label = "sos-top-bar-alpha"
     )
 
+    val context = LocalContext.current
     var holding by remember { mutableStateOf(false) }
     var triggered by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -121,7 +153,7 @@ fun GlobalSosStatusBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(52.dp)
+            .height(64.dp)
             .background(barColor, RoundedCornerShape(10.dp))
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -132,25 +164,34 @@ fun GlobalSosStatusBar(
             color = textColor,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 0.8.sp
+            letterSpacing = 0.8.sp,
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .padding(end = 8.dp)
         )
 
         if (sosActive) {
             Box(
                 modifier = Modifier
+                    .size(width = SOS_BUTTON_WIDTH, height = SOS_BUTTON_HEIGHT)
                     .background(Color.White.copy(alpha = 0.16f), RoundedCornerShape(5.dp))
                     .pointerInput(Unit) {
                         detectTapGestures(onTap = { onClear() })
-                    }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                Text("CLEAR SOS", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "CLEAR SOS",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
             }
         } else {
             Box(
                 modifier = Modifier
-                    .size(width = 112.dp, height = 44.dp)
+                    .size(width = SOS_BUTTON_WIDTH, height = SOS_BUTTON_HEIGHT)
                     .background(TacticalCyan.copy(alpha = 0.14f), RoundedCornerShape(5.dp))
                     .pointerInput(Unit) {
                         awaitEachGesture {
@@ -158,6 +199,7 @@ fun GlobalSosStatusBar(
                             down.consume()
                             triggered = false
                             holding = true
+                            vibrateHoldStart(context)
                             try {
                                 while (true) {
                                     val event = awaitPointerEvent()
@@ -178,9 +220,9 @@ fun GlobalSosStatusBar(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (triggered) "SOS SENT" else if (holding) "HOLD..." else "HOLD SOS",
+                    text = if (triggered) "SOS ACTIVE" else if (holding) "HOLD..." else "HOLD SOS",
                     color = TacticalCyan,
-                    fontSize = 10.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp
                 )

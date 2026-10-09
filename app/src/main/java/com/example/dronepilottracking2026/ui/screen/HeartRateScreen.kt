@@ -63,6 +63,7 @@ fun HeartRateScreen(viewModel: BluetoothViewModel, modifier: Modifier = Modifier
     val context = LocalContext.current
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         viewModel.refreshBluetoothState()
+        viewModel.ensureService()
         if (it.values.all { granted -> granted }) viewModel.startScan()
     }
 

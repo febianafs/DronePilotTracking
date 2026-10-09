@@ -1,9 +1,11 @@
 package com.example.dronepilottracking2026.core.location
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -67,6 +69,7 @@ class LocationTrackingService : Service() {
         private const val ACTION_CLEAR_SOS = "com.example.dronepilottracking2026.action.CLEAR_SOS"
         private const val ACTION_SEND_AVATAR = "com.example.dronepilottracking2026.action.SEND_AVATAR"
         private const val DEFAULT_INTERVAL_MS = 5_000L
+        private const val SOS_WAITING_REPORT_MS = 15_000L
         private const val SOS_PREFS = "sos_state"
         private const val SOS_ACTIVE_KEY = "active"
 
@@ -84,7 +87,29 @@ class LocationTrackingService : Service() {
         private val _avatarSendResult = MutableSharedFlow<Result<Unit>>(extraBufferCapacity = 8)
         val avatarSendResult = _avatarSendResult.asSharedFlow()
 
+        /**
+         * A location foreground service cannot start without a location permission on
+         * Android 14+, so every start path checks it first instead of crashing.
+         */
+        fun hasLocationPermission(context: android.content.Context): Boolean =
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        /** Shows a persisted SOS in the UI even before the service is running. */
+        fun restoreSosState(context: android.content.Context) {
+            _sosActive.value = context.getSharedPreferences(SOS_PREFS, MODE_PRIVATE).getBoolean(SOS_ACTIVE_KEY, false)
+        }
+
+        private fun persistSosActive(context: android.content.Context, active: Boolean) {
+            _sosActive.value = active
+            context.getSharedPreferences(SOS_PREFS, MODE_PRIVATE).edit().putBoolean(SOS_ACTIVE_KEY, active).apply()
+        }
+
         fun requestSendAvatar(context: android.content.Context) {
+            if (!hasLocationPermission(context)) {
+                _avatarSendResult.tryEmit(Result.failure(IllegalStateException("Location permission is required to send avatar")))
+                return
+            }
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, LocationTrackingService::class.java).setAction(ACTION_SEND_AVATAR)
@@ -92,6 +117,12 @@ class LocationTrackingService : Service() {
         }
 
         fun requestSos(context: android.content.Context) {
+            if (!hasLocationPermission(context)) {
+                // Keep SOS active; the service resumes it once location permission is granted.
+                persistSosActive(context, true)
+                _sosResult.tryEmit(Result.failure(IllegalStateException("SOS active, location permission is required")))
+                return
+            }
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, LocationTrackingService::class.java).setAction(ACTION_SOS)
@@ -99,10 +130,15 @@ class LocationTrackingService : Service() {
         }
 
         fun clearSos(context: android.content.Context) {
+            if (!hasLocationPermission(context)) {
+                persistSosActive(context, false)
+                return
+            }
             context.startService(Intent(context, LocationTrackingService::class.java).setAction(ACTION_CLEAR_SOS))
         }
 
         fun start(context: android.content.Context) {
+            if (!hasLocationPermission(context)) return
             val intent = Intent(context, LocationTrackingService::class.java).setAction(ACTION_START)
             ContextCompat.startForegroundService(context, intent)
         }
@@ -121,8 +157,6 @@ class LocationTrackingService : Service() {
     private lateinit var sequenceDataStore: DmrSequenceDataStore
     private var settingsJob: Job? = null
     private var dmrSchedulerJob: Job? = null
-    private var dmrSosRepeatJob: Job? = null
-    private var internetSosRepeatJob: Job? = null
     private var sosSendJob: Job? = null
     private var mqttManager: MqttManager? = null
     private var mqttConfig: MqttConfig = MqttConfig()
@@ -152,7 +186,7 @@ class LocationTrackingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        _sosActive.value = getSharedPreferences(SOS_PREFS, MODE_PRIVATE).getBoolean(SOS_ACTIVE_KEY, false)
+        restoreSosState(this)
         repository = LocationRepository(applicationContext)
         payloadBuilder = MqttPayloadBuilder(applicationContext)
         dmrTransport = DmrTransport(applicationContext)
@@ -160,39 +194,37 @@ class LocationTrackingService : Service() {
         createNotificationChannel()
     }
 
-    private fun setSosActive(active: Boolean) {
-        _sosActive.value = active
-        getSharedPreferences(SOS_PREFS, MODE_PRIVATE).edit().putBoolean(SOS_ACTIVE_KEY, active).apply()
-    }
+    private fun setSosActive(active: Boolean) = persistSosActive(this, active)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_STICKY
+        }
+        if (!startTracking()) {
+            // Location permission was revoked (e.g. sticky restart); stop instead of crashing.
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
-            ACTION_STOP -> stopSelf()
-            ACTION_SOS -> {
-                startTracking()
-                sendSos()
-            }
-            ACTION_CLEAR_SOS -> {
-                startTracking()
-                clearSos()
-            }
-            ACTION_SEND_AVATAR -> {
-                startTracking()
-                sendAvatar()
-            }
-            else -> startTracking()
+            ACTION_SOS -> sendSos()
+            ACTION_CLEAR_SOS -> clearSos()
+            ACTION_SEND_AVATAR -> sendAvatar()
         }
         return START_STICKY
     }
 
-    private fun startTracking() {
-        startAsForeground()
-        if (locationJob?.isActive == true) return
+    private fun startTracking(): Boolean {
+        if (!startAsForeground()) return false
+        if (locationJob?.isActive == true) return true
         mqttManager = (application as DronePilotApplication).mqttManager
         observeSettings()
         startLocationUpdates(locationIntervalMs)
         startHeartRatePublisher()
         startDmrScheduler()
+        // Resume an SOS that was still active when the process was killed.
+        if (_sosActive.value) startSosLoop()
+        return true
     }
 
     private fun startLocationUpdates(intervalMs: Long) {
@@ -393,112 +425,87 @@ class LocationTrackingService : Service() {
     }
 
     private fun sendSos() {
-        _sosActive.value = true
-        dmrSosRepeatJob?.cancel()
-        internetSosRepeatJob?.cancel()
-        sosSendJob?.cancel()
         setSosActive(true)
+        startSosLoop()
+    }
+
+    /**
+     * Keeps delivering SOS until it is cleared: waits (without giving up) for location and
+     * delivery readiness, sends, then repeats every [DMR_SOS_REPEAT_INTERVAL_MS]. The current
+     * delivery mode is re-read on every attempt, so switching INTERNET/DMR mid-SOS is handled.
+     */
+    private fun startSosLoop() {
+        sosSendJob?.cancel()
         sosSendJob = serviceScope.launch {
-            val ready = withTimeoutOrNull(15_000L) {
-                while (
-                    profile == null ||
-                    lastLocation.value == null ||
-                    (deliveryMode == DeliveryMode.INTERNET && !mqttConfig.isComplete) ||
-                    (deliveryMode == DeliveryMode.DMR &&
-                        (!dmrTransport.readiness().isReady || profile?.id.isNullOrBlank()))
-                ) {
-                    delay(100L)
-                }
-                true
-            } == true
-
-            val currentProfile = profile
-            val currentLocation = lastLocation.value
-            val result: Result<Unit> = when {
-                !ready || currentProfile == null || currentLocation == null -> {
-                    Result.failure(IllegalStateException("SOS active, waiting for location or delivery readiness"))
-                }
-                deliveryMode == DeliveryMode.DMR -> {
-                    createAndSendDmrFrame(type = "S", location = currentLocation)
-                    startDmrSosRepeater()
-                    Result.success(Unit)
-                }
-                else -> {
-                    val config = mqttConfig
-                    if (!config.isComplete) {
-                        Result.failure(IllegalStateException("SOS active, waiting for location or MQTT data"))
-                    } else {
-                        awaitDmrSlotWindow()
-                        val payload = payloadBuilder.buildSosPayload(
-                            currentProfile,
-                            currentLocation,
-                            serialNumber = config.serialNumber,
-                            id = currentProfile.id
-                        )
-                        val published = mqttManager?.publish(
-                            config.personelSosTopic,
-                            payload,
-                            MqttManager.QOS_SOS,
-                            kind = "SOS"
-                        ) == true
-                        startInternetSosRepeater()
-                        if (published) Result.success(Unit)
-                        else Result.failure(IllegalStateException("SOS queued or failed to publish; check MQTT status"))
+            var delivered = false
+            var waitingReported = false
+            while (_sosActive.value) {
+                val waitStartedAt = System.currentTimeMillis()
+                while (!isSosDeliveryReady()) {
+                    if (!delivered && !waitingReported &&
+                        System.currentTimeMillis() - waitStartedAt >= SOS_WAITING_REPORT_MS
+                    ) {
+                        waitingReported = true
+                        _sosResult.emit(Result.failure(IllegalStateException("SOS active, waiting for location or delivery readiness")))
                     }
+                    delay(100L)
+                    if (!_sosActive.value) return@launch
                 }
-            }
-            _sosResult.emit(result)
-        }
-    }
 
-    private fun startDmrSosRepeater() {
-        dmrSosRepeatJob?.cancel()
-        dmrSosRepeatJob = serviceScope.launch {
-            while (isActive && _sosActive.value && deliveryMode == DeliveryMode.DMR) {
+                val result = sendSosOnce()
+                // Report attempts until the first one succeeds; later repeats stay silent.
+                if (!delivered) {
+                    _sosResult.emit(result)
+                    delivered = result.isSuccess
+                }
                 delay(DMR_SOS_REPEAT_INTERVAL_MS)
-                if (!isActive || !_sosActive.value || deliveryMode != DeliveryMode.DMR) break
-                val location = lastLocation.value ?: continue
-                createAndSendDmrFrame(type = "S", location = location)
             }
         }
     }
 
-    private fun startInternetSosRepeater() {
-        internetSosRepeatJob?.cancel()
-        internetSosRepeatJob = serviceScope.launch {
-            while (isActive && _sosActive.value && deliveryMode == DeliveryMode.INTERNET) {
-                delay(DMR_SOS_REPEAT_INTERVAL_MS)
-                if (!isActive || !_sosActive.value || deliveryMode != DeliveryMode.INTERNET) break
-                val currentProfile = profile ?: continue
-                val currentLocation = lastLocation.value ?: continue
-                val config = mqttConfig
-                if (!config.isComplete) continue
-                awaitDmrSlotWindow()
-                if (!isActive || !_sosActive.value || deliveryMode != DeliveryMode.INTERNET) break
-                val payload = payloadBuilder.buildSosPayload(
-                    currentProfile,
-                    currentLocation,
-                    serialNumber = config.serialNumber,
-                    id = currentProfile.id
-                )
-                mqttManager?.publish(
-                    config.personelSosTopic,
-                    payload,
-                    MqttManager.QOS_SOS,
-                    kind = "SOS"
-                )
-            }
+    private fun isSosDeliveryReady(): Boolean {
+        if (profile == null || lastLocation.value == null) return false
+        return when (deliveryMode) {
+            DeliveryMode.INTERNET -> mqttConfig.isComplete
+            DeliveryMode.DMR -> dmrTransport.readiness().isReady && !profile?.id.isNullOrBlank()
         }
+    }
+
+    private suspend fun sendSosOnce(): Result<Unit> {
+        val currentProfile = profile
+        val currentLocation = lastLocation.value
+        if (currentProfile == null || currentLocation == null) {
+            return Result.failure(IllegalStateException("SOS active, waiting for location or delivery readiness"))
+        }
+        if (deliveryMode == DeliveryMode.DMR) {
+            createAndSendDmrFrame(type = "S", location = currentLocation)
+            return Result.success(Unit)
+        }
+
+        awaitDmrSlotWindow()
+        val config = mqttConfig
+        if (!config.isComplete) {
+            return Result.failure(IllegalStateException("SOS active, waiting for location or MQTT data"))
+        }
+        val payload = payloadBuilder.buildSosPayload(
+            currentProfile,
+            currentLocation,
+            serialNumber = config.serialNumber,
+            id = currentProfile.id
+        )
+        val published = mqttManager?.publish(
+            config.personelSosTopic,
+            payload,
+            MqttManager.QOS_SOS,
+            kind = "SOS"
+        ) == true
+        return if (published) Result.success(Unit)
+        else Result.failure(IllegalStateException("SOS queued or failed to publish; check MQTT status"))
     }
 
     private fun clearSos() {
         // Matikan indikator lokal segera saat tombol CLEAR SOS ditekan sekali.
         setSosActive(false)
-        _sosActive.value = false
-        dmrSosRepeatJob?.cancel()
-        dmrSosRepeatJob = null
-        internetSosRepeatJob?.cancel()
-        internetSosRepeatJob = null
         sosSendJob?.cancel()
         dmrForceNextData = true
 
@@ -595,8 +602,6 @@ class LocationTrackingService : Service() {
         heartRateJob?.cancel()
         mqttConfigJob?.cancel()
         dmrSchedulerJob?.cancel()
-        dmrSosRepeatJob?.cancel()
-        internetSosRepeatJob?.cancel()
         sosSendJob?.cancel()
         settingsJob?.cancel()
         mqttManager?.disconnect()
@@ -617,7 +622,8 @@ class LocationTrackingService : Service() {
         }
     }
 
-    private fun startAsForeground() {
+    private fun startAsForeground(): Boolean {
+        if (!hasLocationPermission(this)) return false
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Drone Pilot Tracking")
             .setContentText("Location tracking is active")
@@ -626,15 +632,20 @@ class LocationTrackingService : Service() {
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        } catch (_: SecurityException) {
+            false
         }
     }
 }
